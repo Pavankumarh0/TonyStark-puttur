@@ -28,6 +28,8 @@ class TimeParser {
     var t = ' ${s.toLowerCase().replaceAll(RegExp(r'[,!?]'), ' ')} ';
     t = t.replaceAllMapped(RegExp(r'(\d)\.(\d\d)'), (m) => '${m[1]}:${m[2]}'); // 6.30 → 6:30
     t = t.replaceAll(RegExp(r'\b(a\.m\.|a m)\b'), 'am').replaceAll(RegExp(r'\b(p\.m\.|p m)\b'), 'pm');
+    // "6 o'clock" → "6:00" (a bare number isn't a time, "6:00" is)
+    t = t.replaceAllMapped(RegExp(r"\b(\d{1,2})\s*o'?\s?clock\b"), (m) => '${m[1]}:00');
     t = t.replaceAll('o\'clock', '').replaceAll('oclock', '');
     for (final e in _numWords.entries.toList()..sort((a, b) => b.key.length.compareTo(a.key.length))) {
       if (e.key == 'a' || e.key == 'an') continue;

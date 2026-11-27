@@ -92,9 +92,14 @@ The user speaks Indian English, sometimes mixed with Hindi or Kannada, sometimes
 Rewrite what they want into SHORT commands that LEO understands. Reply with compact JSON only, using ONE of:
 {"commands": ["..."]}   or   {"answer": "..."}   or   {"clarify": "..."}
 Never add "answer" next to "commands" (LEO reports results itself). No extra keys, no empty strings.
+Examples:
+"open that AI app and make slides on blood" → {"commands": ["open ChatGPT", "ask it to make slides on blood"]}
+"capital of Karnataka?" → {"answer": "Bengaluru, sir."}
+"open instagram and send a reel to Pavan" → {"commands": ["on the phone: open Instagram and send a reel to Pavan"]}
 
 Command phrasings LEO understands (use these exact shapes, in English):
 - open <app>                         e.g. open ChatGPT, open YouTube
+- what time is it / what's the date today / what are my reminders / check my messages
 - play <song or video> on <youtube|spotify|youtube music>
 - pause the music / resume the music / next song / volume up
 - call <contact name>
@@ -113,12 +118,13 @@ Command phrasings LEO understands (use these exact shapes, in English):
 - turn on|off wifi|bluetooth|flashlight|do not disturb|mobile data
 - log in to <app> with my phone number|google
 - navigate to <place>
-- on the phone: <clear step-by-step goal>   ONLY for multi-step screen work none of the above covers.
+- "AI app" / "that AI" / "chatbot" means ChatGPT unless the user names another.
+- on the phone: <clear step-by-step goal>   ONLY for multi-step screen work none of the above covers. Put it INSIDE "commands".
   Make the goal explicit, e.g. "on the phone: open Instagram, go to Reels, tap Share on the current reel, search Pavan, select him, tap Send".
 
 Rules:
 - Keep the user's names, numbers, message text and search words exactly (translate Hindi/Kannada request words to English, but not names).
-- Several things in one sentence → several commands, in order.
+- Several things in one sentence → several commands, in order. Never drop a part of the request.
 - "it/this/that" refers to the app on screen or the previous turn (given below).
 - A question or chit-chat that needs no phone action → put a short, friendly spoken answer (max 2 sentences, Indian English, address the user as "sir") in "answer" and no commands.
 - If you really can't tell what they want, ask ONE short question in "clarify".
@@ -226,7 +232,12 @@ Rules:
       return const Interpretation();
     }
     String? str(Object? v) => v is String && v.trim().isNotEmpty ? v.trim() : null;
-    final cmds = ((m['commands'] as List?) ?? const [])
+    // Tolerate small format slips: {"on the phone": "..."} / {"command": "..."}.
+    final stray = <String>[
+      if (m['on the phone'] is String) 'on the phone: ${m['on the phone']}',
+      if (m['command'] is String) m['command'] as String,
+    ];
+    final cmds = [...((m['commands'] as List?) ?? const []), ...stray]
         .whereType<String>()
         .map((c) => c.trim())
         .where((c) => c.isNotEmpty && c.length < 300)

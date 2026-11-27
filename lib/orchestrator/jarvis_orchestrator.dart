@@ -431,6 +431,11 @@ class JarvisOrchestrator extends ChangeNotifier {
     var intent = engine.parse(raw, ctx: _ctx);
     // Rules didn't match → try the on-device trained model before ever considering AI.
     if (intent is UnknownIntent && _freeTextWait == null && _choiceWait == null && _approvalWait == null) {
+      // Several steps / mixed language / long → let the brain plan it; the small on-device
+      // classifier only ever picks ONE action and would drop the rest.
+      if (source != 'sarvam' && _sarvamReady && looksComplex(_currentUtterance) && await _understandWithSarvam(raw, source)) {
+        return;
+      }
       final guess = classifier.classify(_currentUtterance);
       if (guess != null) {
         debugPrint('LEO local-model: "$_currentUtterance" → ${guess.runtimeType}');
@@ -465,7 +470,8 @@ class JarvisOrchestrator extends ChangeNotifier {
       return;
     }
     final kind = _kindOf(intent);
-    await _store('user', raw, source: source, kind: kind, route: intent.requiresAi ? 'ai' : 'local');
+    // Steps planned by the brain are shown once as LEO's plan — not as if the user had said them.
+    if (source != 'sarvam') await _store('user', raw, source: source, kind: kind, route: intent.requiresAi ? 'ai' : 'local');
 
     // 0) Media controls act on the playing app immediately (no task needed).
     if (intent is MediaControlIntent) return _mediaControl(intent.action);
@@ -3030,6 +3036,18 @@ class JarvisOrchestrator extends ChangeNotifier {
 
   // ------------------------------------------------------------------ speaking & storage
   // ------------------------------------------------------------------ cloud understanding (OpenAI brain)
+  /// Multi-step ("…then…", "phir", "uske baad"), mixed Hindi/Kannada, or long requests.
+  static bool looksComplex(String t) {
+    final s = t.toLowerCase();
+    if (RegExp(r'\b(then|after that|and also|also|first|next|phir|fir|pehle|uske baad|aur|baad mein|nantara|amele|matte|mele)\b').hasMatch(s)) {
+      return true;
+    }
+    if (RegExp(r'\b(karo|kar do|kardo|khol|bata|chala|bajao|bhej|lagao|band|maadi|haaku|helu|kodi|beku|yaar|bhai|mujhe|mera|meri|nanna|nange)\b').hasMatch(s)) {
+      return true;
+    }
+    return s.split(RegExp(r'\s+')).length > 9;
+  }
+
   /// LEO's brain is OpenAI (Sarvam is voice only). null = cloud understanding off or no key.
   String? get _cloudProvider =>
       settings.sarvamUnderstanding && settings.hasSecret(SecretKey.openai) ? 'openai' : null;
@@ -3099,6 +3117,9 @@ class JarvisOrchestrator extends ChangeNotifier {
           extraStoredText: '\n· ${res.usageLine}');
       return true;
     }
+    // Show the plan + its cost once (no spoken words: LEO reports each step as it happens).
+    final planText = res.commands.map((c) => c.startsWith('on the phone:') ? c.substring(13).trim() : c).join('  →  ');
+    await _store('jarvis', 'Plan: $planText\n· ${res.usageLine}', route: provider, kind: 'plan');
     // Run the commands in order through the normal engine (all rules & approvals apply). The first
     // starts now; the rest wait for each task to finish, so the voice loop stays free for answers.
     await handleInput(res.commands.first, source: 'sarvam');
