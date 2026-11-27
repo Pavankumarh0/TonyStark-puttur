@@ -15,6 +15,18 @@ import 'sarvam_brain.dart';
 /// Personal identifiers are removed before this is called (see PrivacyFilter).
 class OpenAiBrain {
   static const _url = 'https://api.openai.com/v1/chat/completions';
+
+  /// After "no credits" / bad key, don't call again for a while — fail instantly instead (faster, no waste).
+  static DateTime? _blockedUntil;
+  static String? blockReason;
+  static bool get blocked => _blockedUntil != null && DateTime.now().isBefore(_blockedUntil!);
+  static void _noteFailure(int status, String msg) {
+    final m = msg.toLowerCase();
+    if (status == 401 || status == 403 || m.contains('credit') || m.contains('quota') || m.contains('billing')) {
+      _blockedUntil = DateTime.now().add(const Duration(minutes: 2));
+      blockReason = msg;
+    }
+  }
   http.Client _client = http.Client();
 
   void cancel() {
@@ -43,6 +55,7 @@ class OpenAiBrain {
       if (json) 'response_format': {'type': 'json_object'},
       'store': false,
     };
+    if (blocked) throw SarvamBrainException(blockReason ?? 'OpenAI unavailable', 429);
     final sw = Stopwatch()..start();
     final http.Response res;
     try {
@@ -60,6 +73,7 @@ class OpenAiBrain {
       try {
         msg = ((jsonDecode(res.body) as Map)['error'] as Map?)?['message'] as String?;
       } catch (_) {}
+      _noteFailure(res.statusCode, msg ?? '');
       throw SarvamBrainException(msg ?? 'OpenAI request failed', res.statusCode);
     }
     final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
@@ -98,6 +112,7 @@ class OpenAiBrain {
       'store': false,
       'prompt_cache_key': 'leo-understand-v1',
     };
+    if (blocked) throw SarvamBrainException(blockReason ?? 'OpenAI unavailable', 429);
     final sw = Stopwatch()..start();
     final http.Response res;
     try {
@@ -115,6 +130,7 @@ class OpenAiBrain {
       try {
         msg = ((jsonDecode(res.body) as Map)['error'] as Map?)?['message'] as String?;
       } catch (_) {}
+      _noteFailure(res.statusCode, msg ?? '');
       throw SarvamBrainException(msg ?? 'OpenAI request failed', res.statusCode);
     }
     final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
