@@ -1,4 +1,5 @@
 import '../core/privacy_filter.dart';
+import '../agent/screen_agent.dart';
 import '../ai/openai_brain.dart';
 import '../ai/sarvam_brain.dart';
 import 'dart:async';
@@ -1381,7 +1382,20 @@ class JarvisOrchestrator extends ChangeNotifier {
     if (!await device.accessibilityEnabled()) {
       throw Exception('To operate apps for you I need the LEO accessibility service. Turn it on in Permissions.');
     }
-    // Brain: on-device model (free, offline) when chosen & downloaded, else OpenAI.
+    // Brain: OpenAI tool-calling screen agent when available (falls back to the on-device brain).
+    final cloudOk = settings.agentBrain != 'local' && settings.hasSecret(SecretKey.openai) && !OpenAiBrain.blocked;
+    if (cloudOk) {
+      try {
+        return await _cloudScreenAgent(tr, goal);
+      } on SarvamBrainException catch (e) {
+        // OpenAI unreachable / no credits → try the on-device brain instead of failing outright.
+        debugPrint('LEO cloud agent unavailable, falling back: $e');
+        if ((await device.llmStatus())['installed'] != true) {
+          throw Exception('My OpenAI brain is unavailable right now (${e.message}).');
+        }
+        await _say('My online brain isn\'t reachable, ${settings.address}. Trying on-device.', kind: 'command');
+      }
+    }
     final llm = await device.llmStatus();
     final useLocal = settings.agentBrain == 'local' && llm['installed'] == true;
     if (!useLocal && !ai.isConfigured) throw AiNotConfigured();
@@ -1395,6 +1409,82 @@ class JarvisOrchestrator extends ChangeNotifier {
     await device.overlayShow();
     try {
       return await _agentLoop(tr, goal, useLocal, brain, brainLabel);
+    } finally {
+      unawaited(device.overlayHide());
+    }
+  }
+
+  /// OpenAI tool-calling screen agent (Sanna-style sub-agent + LEO's approvals, STOP/PAUSE, masking).
+  Future<String?> _cloudScreenAgent(TaskTracker tr, String goal) async {
+    final a = settings.address;
+    final model = settings.openAiModel;
+    tr.setParams({'brain': 'openai'});
+    await _say('On it, $a. I\'ll show each step — say "stop" any time.', kind: 'command');
+    await device.overlayShow();
+    var n = 0, calls = 0;
+    final agent = ScreenAgent(
+      device: device,
+      apps: apps,
+      brain: openAiBrain,
+      apiKey: settings.secret(SecretKey.openai)!,
+      model: model,
+      hooks: ScreenAgentHooks(
+        checkpoint: () => tr.control.checkpoint(),
+        isSensitive: isSensitiveLabel,
+        askUser: (q) async {
+          unawaited(device.overlayUpdate(title: 'LEO · NEEDS YOU', detail: q, warn: true));
+          return _askFreeText(tr, q);
+        },
+        approve: (app, button, typed) async {
+          final content = typed == null ? 'Press "$button" in $app' : 'Press "$button" in $app — text: "$typed"';
+          final reply = await _askApproval(
+              tr,
+              ApprovalRequest(
+                  id: 'agent-${tr.snapshot.id}-${n + 1}', actionType: 'phone.tap', title: 'Press "$button"',
+                  recipientId: '$app#$button', recipientLabel: app, content: content),
+              typed == null ? '$a, shall I press "$button"?' : '$a, shall I press "$button" to send "$typed"?');
+          if (reply.answer != _ApprovalAnswer.approve) return false;
+          approvals.consume('phone.tap', '$app#$button', content);
+          tr.setState(AgentState.running);
+          return true;
+        },
+        onStep: (s, {index, warn = false}) {
+          n++;
+          tr.addStep(TaskStep(id: 'cs$n', description: s, status: warn ? StepStatus.running : StepStatus.done));
+          unawaited(device.overlayUpdate(
+              title: warn ? 'LEO · WAITING FOR YOUR OK' : 'LEO · STEP $n · OPENAI', detail: s, highlightIndex: index, warn: warn));
+        },
+        onUsage: (input, output, cached, ms, sent) {
+          calls++;
+          final cost = Pricing.cost('openai', model, input, output, cached);
+          unawaited(memory.logCloud(
+              provider: 'openai', model: model, purpose: 'screen_agent', sentText: sent, maskedCount: 0,
+              input: input, output: output, cached: cached, cost: cost?.amount, currency: cost?.currency, latencyMs: ms, ok: true));
+          unawaited(memory.logTokenUsage(
+              provider: 'openai', model: model, purpose: 'screen_agent', input: input, output: output,
+              total: (input ?? 0) + (output ?? 0), reported: input != null, ok: true));
+        },
+      ),
+    );
+    try {
+      final r = await agent.run(goal);
+      final cost = Pricing.cost('openai', model, r.inputTokens, r.outputTokens, 0);
+      tr.addStep(TaskStep(
+          id: 'usage', description: 'OpenAI brain', status: StepStatus.done,
+          detail: '$calls calls · ${r.inputTokens + r.outputTokens} tokens'
+              '${cost == null ? '' : ' · \$${cost.amount.toStringAsFixed(4)}'}'));
+      switch (r.status) {
+        case 'success':
+          await _say(r.message.isEmpty ? 'Done, $a.' : r.message, kind: 'agent', route: 'openai');
+          return r.message;
+        case 'declined':
+          tr.cancelRemaining();
+          tr.setState(AgentState.cancelled, result: r.message);
+          await _say(r.message, kind: 'approval');
+          return r.message;
+        default:
+          throw Exception(r.message);
+      }
     } finally {
       unawaited(device.overlayHide());
     }

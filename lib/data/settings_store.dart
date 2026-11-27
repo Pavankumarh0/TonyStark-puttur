@@ -93,7 +93,7 @@ class SettingsStore extends ChangeNotifier {
   set wakeEngine(String v) => _set('wake_engine', v);
 
   /// Screen-agent brain: 'local' (on-device model, free, offline) or 'gemini' (cloud, uses quota).
-  String get agentBrain => _prefs.getString('agent_brain') ?? 'local';
+  String get agentBrain => _prefs.getString('agent_brain') ?? 'gemini'; // 'gemini' = cloud (OpenAI) brain
   set agentBrain(String v) => _set('agent_brain', v);
 
   /// Understand Hindi/Kannada/code-mixed speech by translating it to English (Sarvam translate mode).

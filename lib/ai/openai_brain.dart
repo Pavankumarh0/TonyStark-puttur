@@ -89,6 +89,80 @@ class OpenAiBrain {
     );
   }
 
+  /// One step of a tool-calling conversation. [messages] are OpenAI chat messages (system/user/
+  /// assistant-with-tool_calls/tool). Returns the assistant message (to append), its tool calls and usage.
+  Future<
+      ({
+        Map<String, dynamic> message,
+        List<({String id, String name, Map<String, dynamic> args})> calls,
+        String text,
+        int? input,
+        int? output,
+        int? cached,
+        int ms
+      })> chatTools({
+    required String apiKey,
+    required String model,
+    required List<Map<String, dynamic>> messages,
+    required List<Map<String, dynamic>> tools,
+    int maxTokens = 300,
+  }) async {
+    if (blocked) throw SarvamBrainException(blockReason ?? 'OpenAI unavailable', 429);
+    final body = {
+      'model': model,
+      'messages': messages,
+      'tools': tools,
+      'tool_choice': 'required', // agents always act through a tool (finish_task ends the run)
+      'parallel_tool_calls': false, // one UI action at a time, then look again
+      'temperature': 0.1,
+      'max_completion_tokens': maxTokens,
+      'store': false,
+    };
+    final sw = Stopwatch()..start();
+    final http.Response res;
+    try {
+      res = await _client
+          .post(Uri.parse(_url),
+              headers: {'Authorization': 'Bearer $apiKey', 'Content-Type': 'application/json'}, body: jsonEncode(body))
+          .timeout(const Duration(seconds: 25));
+    } on TimeoutException {
+      throw SarvamBrainException('OpenAI took too long to answer', 408);
+    } on http.ClientException catch (e) {
+      throw SarvamBrainException('Network error talking to OpenAI: ${e.message}', 0);
+    }
+    if (res.statusCode != 200) {
+      String? msg;
+      try {
+        msg = ((jsonDecode(res.body) as Map)['error'] as Map?)?['message'] as String?;
+      } catch (_) {}
+      _noteFailure(res.statusCode, msg ?? '');
+      throw SarvamBrainException(msg ?? 'OpenAI request failed', res.statusCode);
+    }
+    final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    final msg = ((j['choices'] as List).first as Map)['message'] as Map<String, dynamic>;
+    final calls = <({String id, String name, Map<String, dynamic> args})>[];
+    for (final c in (msg['tool_calls'] as List?) ?? const []) {
+      final f = (c as Map)['function'] as Map;
+      Map<String, dynamic> args;
+      try {
+        args = (jsonDecode((f['arguments'] as String?) ?? '{}') as Map).cast<String, dynamic>();
+      } catch (_) {
+        args = const {};
+      }
+      calls.add((id: c['id'] as String, name: f['name'] as String, args: args));
+    }
+    final usage = j['usage'] as Map?;
+    return (
+      message: msg,
+      calls: calls,
+      text: (msg['content'] as String?) ?? '',
+      input: usage?['prompt_tokens'] as int?,
+      output: usage?['completion_tokens'] as int?,
+      cached: (usage?['prompt_tokens_details'] as Map?)?['cached_tokens'] as int?,
+      ms: sw.elapsedMilliseconds,
+    );
+  }
+
   Future<Interpretation?> interpret({
     required String apiKey,
     required String model,
