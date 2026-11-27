@@ -187,3 +187,11 @@ class CheckMessagesIntent extends LocalIntent {
   final bool email;
   const CheckMessagesIntent({required this.whatsapp, required this.email});
 }
+
+enum MediaAction { pause, play, next, previous, volumeUp, volumeDown, mute }
+
+/// Controls whatever app is currently playing (YouTube, Spotify, …) — local, no AI.
+class MediaControlIntent extends LocalIntent {
+  final MediaAction action;
+  const MediaControlIntent(this.action);
+}

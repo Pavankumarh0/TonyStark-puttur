@@ -65,4 +65,17 @@ void main() {
       expect(c2.classify('blast some tunes by sid sriram'), isA<PlayMediaIntent>());
     });
   });
+
+  group('Music controls are local', () {
+    final e = LocalIntentEngine();
+    MediaAction? a(String s) { final i = e.parse(s); return i is MediaControlIntent ? i.action : null; }
+    test('uh, pause the music', () => expect(a('uh, pause the music.'), MediaAction.pause));
+    test('stop the song', () => expect(a('stop the song'), MediaAction.pause));
+    test('resume the music', () => expect(a('resume the music'), MediaAction.play));
+    test('next song', () => expect(a('next song'), MediaAction.next));
+    test('skip this song', () => expect(a('skip this song'), MediaAction.next));
+    test('volume up', () => expect(a('volume up'), MediaAction.volumeUp));
+    test('plain STOP still stops JARVIS tasks', () => expect(e.parse('stop'), isA<StopIntent>()));
+    test('play pesamale still searches', () => expect(e.parse('play pesamale'), isA<PlayMediaIntent>()));
+  });
 }
