@@ -65,21 +65,22 @@ class _HomeScreenState extends State<HomeScreen> {
                   onTap: o.tapMic,
                 ),
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 2),
               Center(
-                child: Text(d.label,
-                    style: TextStyle(color: d.color, letterSpacing: 3, fontWeight: FontWeight.w700, fontSize: 13)),
-              ),
-              if (o.voice == VoicePhase.transcribing)
-                const Center(child: Padding(padding: EdgeInsets.only(top: 4), child: Text('Transcribing…', style: TextStyle(color: JColors.dim)))),
-              if (o.lastHeard != null && o.voice == VoicePhase.idle)
-                Center(
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text('Heard: "${o.lastHeard}"',
-                        textAlign: TextAlign.center, style: const TextStyle(color: JColors.dim, fontSize: 12)),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: d.color.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(40),
+                    border: Border.all(color: d.color.withValues(alpha: 0.35)),
                   ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Container(width: 6, height: 6, decoration: BoxDecoration(color: d.color, shape: BoxShape.circle)),
+                    const SizedBox(width: 8),
+                    Text(o.voice == VoicePhase.transcribing ? 'UNDERSTANDING' : d.label, style: monoLabel(color: d.color, size: 11)),
+                  ]),
                 ),
+              ),
               const SizedBox(height: 14),
               if (o.pendingApproval != null) ...[
                 ApprovalCard(req: o.pendingApproval!, o: o),
@@ -112,6 +113,7 @@ class _HomeScreenState extends State<HomeScreen> {
           listening: o.voice == VoicePhase.listening,
           showStop: active,
           onStop: o.stop,
+          heard: o.lastHeard,
         ),
       ],
     );
@@ -134,37 +136,48 @@ class _Header extends StatelessWidget {
       WakeWordStatus.error => ('Wake word error', JColors.red),
       WakeWordStatus.off => (o.listeningEnabled ? 'Mic on' : 'Not listening', JColors.dim),
     };
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 12, 4),
+    // Landing-page style nav pill: orb logo + LEO wordmark, live mic/wake status, listening switch.
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+      padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+      decoration: BoxDecoration(
+        color: JColors.ink.withValues(alpha: 0.75),
+        borderRadius: BorderRadius.circular(40),
+        border: Border.all(color: JColors.volt.withValues(alpha: 0.10)),
+      ),
       child: Row(
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('L.E.O',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w300, letterSpacing: 6, color: JColors.cyan)),
-              const SizedBox(height: 2),
-              Row(children: [
-                Icon(mic.running ? Icons.mic : Icons.mic_off, size: 14, color: mic.running ? JColors.cyan : JColors.dim),
-                const SizedBox(width: 4),
-                Text(mic.running ? 'Microphone active' : 'Microphone off',
-                    style: TextStyle(fontSize: 11, color: mic.running ? JColors.cyan : JColors.dim)),
-                const SizedBox(width: 10),
-                Container(width: 7, height: 7, decoration: BoxDecoration(color: wakeColor, shape: BoxShape.circle)),
-                const SizedBox(width: 4),
-                Text(wakeText, style: TextStyle(fontSize: 11, color: wakeColor)),
-              ]),
-            ],
+          const OrbMini(size: 26),
+          const SizedBox(width: 10),
+          const Text('LEO',
+              style: TextStyle(fontFamily: JFonts.display, fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: -1.3, color: JColors.bone)),
+          const SizedBox(width: 12),
+          Container(width: 1, height: 22, color: JColors.volt.withValues(alpha: 0.15)),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Icon(mic.running ? Icons.mic : Icons.mic_off, size: 12, color: mic.running ? JColors.volt : JColors.mute),
+                  const SizedBox(width: 4),
+                  Text(mic.running ? 'MIC ON' : 'MIC OFF', style: monoLabel(color: mic.running ? JColors.volt : JColors.mute, size: 9)),
+                ]),
+                const SizedBox(height: 3),
+                Row(children: [
+                  Container(width: 6, height: 6, decoration: BoxDecoration(color: wakeColor, shape: BoxShape.circle)),
+                  const SizedBox(width: 5),
+                  Flexible(
+                    child: Text(wakeText.toUpperCase(),
+                        overflow: TextOverflow.ellipsis, style: monoLabel(color: wakeColor, size: 9).copyWith(letterSpacing: 1.2)),
+                  ),
+                ]),
+              ],
+            ),
           ),
-          const Spacer(),
-          Column(
-            children: [
-              Switch(
-                value: o.listeningEnabled,
-                onChanged: (v) => v ? o.enableListening() : o.disableListening(),
-              ),
-              Text(o.listeningEnabled ? 'Listening' : 'Off', style: const TextStyle(fontSize: 10, color: JColors.dim)),
-            ],
+          Switch(
+            value: o.listeningEnabled,
+            onChanged: (v) => v ? o.enableListening() : o.disableListening(),
           ),
         ],
       ),
@@ -561,14 +574,14 @@ class _SectionLabel extends StatelessWidget {
   const _SectionLabel(this.text);
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Row(children: [
-          const Expanded(child: Divider()),
-          Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Text(text, style: const TextStyle(color: JColors.dim, fontSize: 10, letterSpacing: 2))),
-          const Expanded(child: Divider()),
-        ]),
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            decoration: BoxDecoration(color: JColors.volt.withValues(alpha: 0.06), borderRadius: BorderRadius.circular(20)),
+            child: Text(text, style: monoLabel(color: JColors.mute, size: 9)),
+          ),
+        ),
       );
 }
 
@@ -580,49 +593,58 @@ class _Bubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final user = m.isUser;
-    return Opacity(
-      opacity: faded ? 0.55 : 1,
-      child: Align(
-        alignment: user ? Alignment.centerRight : Alignment.centerLeft,
-        child: Container(
-          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.8),
-          margin: const EdgeInsets.symmetric(vertical: 4),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: user ? JColors.blue.withValues(alpha: 0.18) : JColors.panel,
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(16),
-              topRight: const Radius.circular(16),
-              bottomLeft: Radius.circular(user ? 16 : 4),
-              bottomRight: Radius.circular(user ? 4 : 16),
-            ),
-            border: Border.all(color: user ? JColors.blue.withValues(alpha: 0.4) : JColors.line),
-          ),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            SelectableText(m.text, style: const TextStyle(fontSize: 14, height: 1.35)),
-            const SizedBox(height: 3),
-            Row(mainAxisSize: MainAxisSize.min, children: [
-              Text(_time(m.createdAt), style: const TextStyle(color: JColors.dim, fontSize: 10)),
-              if (m.source == 'voice') const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.mic, size: 10, color: JColors.dim)),
-              if (!user && m.route == 'ai')
-                const Padding(
-                    padding: EdgeInsets.only(left: 6),
-                    child: Text('Gemini', style: TextStyle(color: JColors.violet, fontSize: 10))),
-              if (!user && m.route == 'local')
-                const Padding(
-                    padding: EdgeInsets.only(left: 6), child: Text('local', style: TextStyle(color: JColors.green, fontSize: 10))),
-            ]),
-          ]),
+    // Landing style: your words = solid volt bubble; LEO = coal bubble with an orb avatar.
+    final bubble = Container(
+      constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.76),
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: user ? JColors.volt : JColors.coal2,
+        borderRadius: BorderRadius.only(
+          topLeft: const Radius.circular(20),
+          topRight: const Radius.circular(20),
+          bottomLeft: Radius.circular(user ? 20 : 6),
+          bottomRight: Radius.circular(user ? 6 : 20),
         ),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        SelectableText(m.text,
+            style: TextStyle(
+                fontSize: 14, height: 1.38, color: user ? JColors.ink : JColors.bone, fontWeight: user ? FontWeight.w500 : FontWeight.w400)),
+        const SizedBox(height: 4),
+        Row(mainAxisSize: MainAxisSize.min, children: [
+          Text(_time(m.createdAt),
+              style: TextStyle(fontFamily: JFonts.mono, fontSize: 9, color: user ? JColors.ink.withValues(alpha: 0.6) : JColors.mute)),
+          if (m.source == 'voice')
+            Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: Icon(Icons.mic, size: 10, color: user ? JColors.ink.withValues(alpha: 0.6) : JColors.mute)),
+          if (!user && m.route == 'ai')
+            Padding(padding: const EdgeInsets.only(left: 6), child: Text('GEMINI', style: monoLabel(color: JColors.violet, size: 8))),
+          if (!user && m.route == 'local')
+            Padding(padding: const EdgeInsets.only(left: 6), child: Text('ON-DEVICE', style: monoLabel(color: JColors.volt, size: 8))),
+        ]),
+      ]),
+    );
+    return Opacity(
+      opacity: faded ? 0.5 : 1,
+      child: Row(
+        mainAxisAlignment: user ? MainAxisAlignment.end : MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (!user) const Padding(padding: EdgeInsets.only(right: 8, bottom: 8), child: OrbMini(size: 18)),
+          Flexible(child: bubble),
+        ],
       ),
     );
   }
 
   static String _time(DateTime d) =>
-      '${d.day}/${d.month} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')} · ${d.day}/${d.month}';
 }
 
-// ---------------------------------------------------------------------------- input bar
+// ---------------------------------------------------------------------------- voice bar
+/// The landing page's bottom "voice bar": orb (tap to talk), what LEO heard / text input, live waveform.
 class _InputBar extends StatelessWidget {
   final TextEditingController controller;
   final VoidCallback onSend;
@@ -630,6 +652,7 @@ class _InputBar extends StatelessWidget {
   final VoidCallback onStop;
   final bool listening;
   final bool showStop;
+  final String? heard;
   const _InputBar({
     required this.controller,
     required this.onSend,
@@ -637,58 +660,77 @@ class _InputBar extends StatelessWidget {
     required this.onStop,
     required this.listening,
     required this.showStop,
+    this.heard,
   });
 
   @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-        decoration: const BoxDecoration(color: JColors.navy, border: Border(top: BorderSide(color: JColors.line))),
-        child: Row(children: [
-          if (showStop) ...[
-            Tooltip(
-              message: 'Stop',
-              child: FilledButton(
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          if (showStop)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: FilledButton.icon(
                 style: FilledButton.styleFrom(
                   backgroundColor: JColors.red,
                   foregroundColor: Colors.white,
-                  shape: const StadiumBorder(),
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                  minimumSize: const Size(double.infinity, 44),
                 ),
                 onPressed: onStop,
-                child: const Row(children: [Icon(Icons.stop, size: 20), SizedBox(width: 4), Text('STOP')]),
+                icon: const Icon(Icons.stop_rounded),
+                label: Text('STOP', style: monoLabel(color: Colors.white, size: 12)),
               ),
             ),
-            const SizedBox(width: 8),
-          ],
-          Expanded(
-            child: TextField(
-              controller: controller,
-              textInputAction: TextInputAction.send,
-              onSubmitted: (_) => onSend(),
-              decoration: InputDecoration(
-                hintText: 'Type an instruction…',
-                suffixIcon: IconButton(onPressed: onSend, icon: const Icon(Icons.send, color: JColors.cyan)),
-              ),
+          Container(
+            height: 64,
+            padding: const EdgeInsets.only(left: 8, right: 6),
+            decoration: BoxDecoration(
+              color: JColors.coal2.withValues(alpha: 0.95),
+              borderRadius: BorderRadius.circular(40),
+              border: Border.all(color: listening ? JColors.volt : JColors.volt.withValues(alpha: 0.10)),
+              boxShadow: listening ? [BoxShadow(color: JColors.volt.withValues(alpha: 0.25), blurRadius: 24)] : null,
             ),
-          ),
-          const SizedBox(width: 8),
-          Tooltip(
-            message: listening ? 'Stop listening' : 'Talk to LEO',
-            child: InkWell(
-              onTap: onMic,
-              customBorder: const CircleBorder(),
-              child: Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: listening ? JColors.cyan : JColors.panel,
-                  border: Border.all(color: JColors.cyan),
-                  boxShadow: listening ? [BoxShadow(color: JColors.cyan.withValues(alpha: 0.5), blurRadius: 16)] : null,
+            child: Row(children: [
+              Tooltip(
+                message: listening ? 'Stop listening' : 'Talk to LEO',
+                child: InkWell(onTap: onMic, customBorder: const CircleBorder(), child: const OrbMini(size: 44)),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(listening ? 'LEO IS LISTENING' : (heard != null ? 'LEO HEARD' : 'TYPE OR TAP THE ORB'), style: monoLabel(size: 9)),
+                    TextField(
+                      controller: controller,
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => onSend(),
+                      style: const TextStyle(fontFamily: JFonts.mono, fontSize: 13, color: JColors.bone),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        filled: false,
+                        contentPadding: const EdgeInsets.only(top: 4),
+                        border: InputBorder.none,
+                        enabledBorder: InputBorder.none,
+                        focusedBorder: InputBorder.none,
+                        hintText: heard != null ? '“$heard”' : 'Ask LEO anything…',
+                        hintStyle: TextStyle(fontFamily: JFonts.mono, fontSize: 13, color: heard != null ? JColors.bone : JColors.mute),
+                        hintMaxLines: 1,
+                      ),
+                    ),
+                  ],
                 ),
-                child: Icon(listening ? Icons.graphic_eq : Icons.mic, color: listening ? JColors.bg : JColors.cyan),
               ),
-            ),
+              Waveform(bars: 6, seed: 9, active: listening, height: 18),
+              const SizedBox(width: 4),
+              IconButton(
+                tooltip: 'Send',
+                onPressed: onSend,
+                icon: const Icon(Icons.arrow_upward_rounded),
+                style: IconButton.styleFrom(backgroundColor: JColors.volt, foregroundColor: JColors.ink),
+              ),
+            ]),
           ),
         ]),
       );

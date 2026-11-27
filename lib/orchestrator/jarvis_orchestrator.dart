@@ -5,6 +5,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../ai/ai_service.dart';
 import '../ai/gemini_client.dart';
+import '../ai/local_agent_brain.dart';
 import '../core/approval/approval_gate.dart';
 import '../core/greeting.dart';
 import '../core/intent/local_classifier.dart';
@@ -1234,31 +1235,49 @@ class JarvisOrchestrator extends ChangeNotifier {
     if (!await device.accessibilityEnabled()) {
       throw Exception('To operate apps for you I need the LEO accessibility service. Turn it on in Permissions.');
     }
-    if (!ai.isConfigured) throw AiNotConfigured();
-    await _say('On it, $a. I\'ll show each step — say "stop" any time.', kind: 'command');
+    // Brain: on-device model (free, offline) when chosen & downloaded, else Gemini.
+    final llm = await device.llmStatus();
+    final useLocal = settings.agentBrain == 'local' && llm['installed'] == true;
+    if (!useLocal && !ai.isConfigured) throw AiNotConfigured();
+    if (settings.agentBrain == 'local' && llm['installed'] != true && !ai.isConfigured) {
+      throw Exception('Download the on-device brain in Settings (one time, 1.6 GB) so I can operate apps without a key.');
+    }
+    final brain = LocalAgentBrain(device);
+    tr.setParams({'brain': useLocal ? 'on-device' : 'gemini'});
+    await _say('On it, $a. ${useLocal ? 'Working on-device. ' : ''}I\'ll show each step — say "stop" any time.', kind: 'command');
     final history = <String>[];
     final installed = (await apps.apps()).map((x) => x.label).toList();
     const maxSteps = 18;
     for (var step = 1; step <= maxSteps; step++) {
       await tr.control.checkpoint();
-      final dump = await device.screenDump();
+      final dump = await device.screenDump(max: useLocal ? 40 : 70);
       if (dump['ok'] != true) {
         if (dump['reason'] == 'blocked_app') {
           throw Exception('For your safety I don\'t operate banking or payment apps (${dump['package']}). Please do that part yourself.');
         }
         throw Exception('I can\'t read the screen (${dump['reason']}).');
       }
-      final plan = await tr.control.guard(ai.agentStep(
-        goal: goal,
-        screen: dump['screen'] as String? ?? '',
-        package: dump['package'] as String?,
-        history: history.length > 8 ? history.sublist(history.length - 8) : history,
-        apps: installed,
-      ));
+      final Map<String, dynamic> plan;
+      if (useLocal) {
+        plan = await tr.control.guard(brain.step(
+          goal: goal,
+          screen: dump['screen'] as String? ?? '',
+          package: dump['package'] as String?,
+          history: history,
+        ));
+      } else {
+        plan = await tr.control.guard(ai.agentStep(
+          goal: goal,
+          screen: dump['screen'] as String? ?? '',
+          package: dump['package'] as String?,
+          history: history.length > 8 ? history.sublist(history.length - 8) : history,
+          apps: installed,
+        ));
+      }
       if (plan['done'] == true) {
         final summary = (plan['summary'] as String?)?.trim();
         tr.addStep(TaskStep(id: 'done', description: 'Finished', status: StepStatus.done, detail: summary));
-        await _say(summary == null || summary.isEmpty ? 'Done, $a.' : '$summary', route: 'ai', kind: 'agent');
+        await _say(summary == null || summary.isEmpty ? 'Done, $a.' : '$summary', route: useLocal ? 'local' : 'ai', kind: 'agent');
         return summary ?? 'Done';
       }
       final ask = (plan['ask'] as String?)?.trim();
@@ -1327,6 +1346,15 @@ class JarvisOrchestrator extends ChangeNotifier {
         throw TaskAbort(AgentState.interrupted);
       }
       history.add('$step. $type${index != null ? ' [$index]' : ''}${text != null ? ' "$text"' : ''} — $describe → ${ok ? 'ok' : 'FAILED ${r['reason'] ?? ''}'}');
+      // Guard against a model looping on the same action.
+      if (history.length >= 3) {
+        String key(String h) => h.replaceFirst(RegExp(r'^\d+\. '), '');
+        final last3 = history.sublist(history.length - 3).map(key).toSet();
+        if (last3.length == 1) {
+          await _say('I seem to be stuck repeating "$describe", $a, so I\'ve stopped. The steps so far are on screen.');
+          return 'Stopped: repeating';
+        }
+      }
     }
     await _say('I couldn\'t finish that within $maxSteps steps, $a. I\'ve stopped; the steps I took are on screen.');
     return 'Step limit reached';

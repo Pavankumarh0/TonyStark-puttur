@@ -166,9 +166,19 @@ class DeviceBridge {
     return [for (final m in l) {'name': m['name'] as String, 'email': m['email'] as String}];
   }
 
+  // ---- on-device model (screen-agent brain, no key)
+  Future<Map<String, dynamic>> llmStatus() async =>
+      await _ch.invokeMapMethod<String, dynamic>('llmStatus') ?? const {'installed': false};
+  Future<void> llmDownload() => _ch.invokeMethod('llmDownload');
+  Future<void> llmCancelDownload() => _ch.invokeMethod('llmCancelDownload');
+  Future<void> llmDelete() => _ch.invokeMethod('llmDelete');
+  Future<void> llmUnload() => _ch.invokeMethod('llmUnload');
+  Future<int> llmCountTokens(String text) async => await _ch.invokeMethod<int>('llmCountTokens', {'text': text}) ?? text.length ~/ 3;
+  Future<String> llmGenerate(String prompt) async => await _ch.invokeMethod<String>('llmGenerate', {'prompt': prompt}) ?? '';
+
   // ---- generic screen control (accessibility)
-  Future<Map<String, dynamic>> screenDump() async =>
-      await _ch.invokeMapMethod<String, dynamic>('screenDump') ?? const {'ok': false, 'reason': 'no_result'};
+  Future<Map<String, dynamic>> screenDump({int max = 70}) async =>
+      await _ch.invokeMapMethod<String, dynamic>('screenDump', {'max': max}) ?? const {'ok': false, 'reason': 'no_result'};
   Future<Map<String, dynamic>> screenAct(String type, {int? index, String? text, String? dir, String? package}) async =>
       await _ch.invokeMapMethod<String, dynamic>('screenAct', {'type': type, 'index': index, 'text': text, 'dir': dir, 'package': package}) ??
       const {'ok': false};

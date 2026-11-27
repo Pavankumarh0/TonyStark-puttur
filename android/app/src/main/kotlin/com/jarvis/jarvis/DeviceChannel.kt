@@ -157,8 +157,16 @@ object DeviceChannel {
                 }
             }
             "nowPlaying" -> background(result) { MediaBridge.nowPlaying(app) }
+            // ---------------- on-device model (screen-agent brain, no key)
+            "llmStatus" -> result.success(LocalLlm.status(app))
+            "llmDownload" -> { LocalLlm.download(app); result.success(null) }
+            "llmCancelDownload" -> { LocalLlm.cancel(); result.success(null) }
+            "llmDelete" -> { LocalLlm.delete(app); result.success(null) }
+            "llmCountTokens" -> background(result) { LocalLlm.countTokens(app, call.argument<String>("text") ?: "") }
+            "llmGenerate" -> background(result) { LocalLlm.generate(app, call.argument<String>("prompt") ?: "") }
+            "llmUnload" -> { LocalLlm.unload(); result.success(null) }
             // ---------------- generic screen control
-            "screenDump" -> background(result) { ScreenAgent.dump() }
+            "screenDump" -> background(result) { ScreenAgent.dump(call.argument<Int>("max") ?: 70) }
             "screenAct" -> background(result) {
                 ScreenAgent.act(app, call.argument<String>("type") ?: "", call.argument<Int>("index"),
                     call.argument<String>("text"), call.argument<String>("dir"), call.argument<String>("package"))

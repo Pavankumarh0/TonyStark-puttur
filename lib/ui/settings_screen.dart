@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../ai/gemini_client.dart';
 import '../data/settings_store.dart';
+import '../device/device_bridge.dart';
 import '../orchestrator/jarvis_orchestrator.dart';
 import 'permissions_screen.dart';
 import 'theme.dart';
@@ -50,6 +53,9 @@ class SettingsScreen extends StatelessWidget {
             }
           },
         ),
+        const SizedBox(height: 20),
+        _label('PHONE CONTROL BRAIN'),
+        const _BrainCard(),
         const SizedBox(height: 20),
         _label('GEMINI'),
         _TextPref(title: 'Model', value: s.geminiModel, onChanged: (v) => s.geminiModel = v),
@@ -289,4 +295,142 @@ class _VerifyGeminiState extends State<_VerifyGemini> {
           onTap: _busy ? null : _verify,
         ),
       );
+}
+
+
+/// On-device model for the screen agent: download / progress / delete, and brain choice.
+class _BrainCard extends StatefulWidget {
+  const _BrainCard();
+
+  @override
+  State<_BrainCard> createState() => _BrainCardState();
+}
+
+class _BrainCardState extends State<_BrainCard> {
+  Map<String, dynamic> _st = const {};
+  StreamSubscription? _sub;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final d = context.read<DeviceBridge>();
+    _refresh();
+    _sub = d.events.listen((e) {
+      if (e['type'] != 'model_download') return;
+      if (!mounted) return;
+      setState(() {
+        _error = e['error'] as String?;
+        _st = {..._st, 'bytes': e['bytes'] ?? _st['bytes'], 'downloading': e['done'] != true && e['error'] == null};
+      });
+      if (e['done'] == true || e['error'] != null) _refresh();
+    });
+  }
+
+  Future<void> _refresh() async {
+    final st = await context.read<DeviceBridge>().llmStatus();
+    if (mounted) setState(() => _st = st);
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.watch<SettingsStore>();
+    final d = context.read<DeviceBridge>();
+    final installed = _st['installed'] == true;
+    final downloading = _st['downloading'] == true;
+    final total = (_st['total'] as num?)?.toDouble() ?? 1597913616;
+    final bytes = (_st['bytes'] as num?)?.toDouble() ?? 0;
+    final pct = (bytes / total).clamp(0.0, 1.0);
+    String gb(double b) => (b / 1e9).toStringAsFixed(2);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(installed ? Icons.memory : Icons.cloud_download_outlined, color: installed ? JColors.volt : JColors.mute),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Text('On-device brain',
+                  style: TextStyle(fontFamily: JFonts.display, fontWeight: FontWeight.w600, fontSize: 16)),
+            ),
+            Text(installed ? 'READY' : (downloading ? 'DOWNLOADING' : 'NOT DOWNLOADED'),
+                style: monoLabel(color: installed ? JColors.volt : JColors.mute, size: 9)),
+          ]),
+          const SizedBox(height: 8),
+          const Text(
+            'Qwen 2.5 · 1.5B (Apache-2.0) runs on your phone to operate apps step by step — no API key, works offline, '
+            'nothing leaves the phone. Less clever than Gemini on long tasks.',
+            style: TextStyle(color: JColors.mute, fontSize: 12, height: 1.4),
+          ),
+          if (downloading || (!installed && bytes > 0)) ...[
+            const SizedBox(height: 12),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: LinearProgressIndicator(value: pct, minHeight: 8, color: JColors.volt, backgroundColor: JColors.line),
+            ),
+            const SizedBox(height: 4),
+            Text('${gb(bytes)} / ${gb(total)} GB', style: monoLabel(color: JColors.mute, size: 9)),
+          ],
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Text('Download stopped: $_error. Tap Download to resume.', style: const TextStyle(color: JColors.amber, fontSize: 12)),
+          ],
+          const SizedBox(height: 12),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            if (!installed && !downloading)
+              FilledButton.icon(
+                onPressed: () async {
+                  setState(() => _error = null);
+                  await d.llmDownload();
+                  await _refresh();
+                },
+                icon: const Icon(Icons.download, size: 18),
+                label: Text(bytes > 0 ? 'Resume download' : 'Download (1.6 GB, use Wi-Fi)'),
+              ),
+            if (downloading)
+              OutlinedButton(onPressed: () async => d.llmCancelDownload(), child: const Text('Pause download')),
+            if (installed)
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(foregroundColor: JColors.red),
+                onPressed: () async {
+                  await d.llmDelete();
+                  await _refresh();
+                },
+                icon: const Icon(Icons.delete_outline, size: 18),
+                label: const Text('Delete model'),
+              ),
+          ]),
+          const SizedBox(height: 14),
+          Text('USE FOR OPERATING APPS', style: monoLabel(color: JColors.mute, size: 9)),
+          const SizedBox(height: 6),
+          SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(value: 'local', label: Text('On-device'), icon: Icon(Icons.phone_android, size: 16)),
+              ButtonSegment(value: 'gemini', label: Text('Gemini cloud'), icon: Icon(Icons.cloud_outlined, size: 16)),
+            ],
+            selected: {s.agentBrain},
+            onSelectionChanged: (v) => s.agentBrain = v.first,
+            style: SegmentedButton.styleFrom(
+              selectedBackgroundColor: JColors.volt,
+              selectedForegroundColor: JColors.ink,
+              foregroundColor: JColors.bone,
+              side: BorderSide(color: JColors.volt.withValues(alpha: 0.25)),
+            ),
+          ),
+          if (s.agentBrain == 'local' && !installed)
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Text('Until the model is downloaded, LEO uses Gemini (if it has quota).',
+                  style: TextStyle(color: JColors.mute, fontSize: 11)),
+            ),
+        ]),
+      ),
+    );
+  }
 }

@@ -91,6 +91,10 @@ class SettingsStore extends ChangeNotifier {
   String get wakeEngine => _prefs.getString('wake_engine') ?? 'sherpa';
   set wakeEngine(String v) => _set('wake_engine', v);
 
+  /// Screen-agent brain: 'local' (on-device model, free, offline) or 'gemini' (cloud, uses quota).
+  String get agentBrain => _prefs.getString('agent_brain') ?? 'local';
+  set agentBrain(String v) => _set('agent_brain', v);
+
   bool get listeningEnabled => _prefs.getBool('listening_enabled') ?? false;
   set listeningEnabled(bool v) => _setB('listening_enabled', v);
 

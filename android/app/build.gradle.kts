@@ -50,4 +50,6 @@ flutter {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
+    // On-device LLM runtime for the screen agent (no API key)
+    implementation("com.google.mediapipe:tasks-genai:0.10.35")
 }

@@ -25,20 +25,25 @@ object QuickToggles {
         "sound" to listOf("sound", "mute", "vibrate"),
     )
 
+    /**
+     * One UI tiles contain an outer button (whole pill → opens the detail page) and an inner icon
+     * button (the actual on/off switch) with the same label. Pick the SMALLEST checkable match.
+     */
     private fun findTile(root: AccessibilityNodeInfo, names: List<String>): AccessibilityNodeInfo? {
         val stack = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
-        var best: AccessibilityNodeInfo? = null
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
         while (stack.isNotEmpty()) {
             val n = stack.removeFirst()
             val label = listOfNotNull(n.contentDescription?.toString(), n.text?.toString()).joinToString(" ").lowercase()
             if (label.isNotEmpty() && names.any { label.startsWith(it) || label.contains(", $it") || label == it || label.contains(it) }) {
                 var c: AccessibilityNodeInfo? = n
                 while (c != null && !c.isClickable) c = c.parent
-                if (c != null) { best = c; if (c.isCheckable) return c }
+                if (c != null) candidates += c
             }
             for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
         }
-        return best
+        fun area(x: AccessibilityNodeInfo): Int { val r = android.graphics.Rect(); x.getBoundsInScreen(r); return r.width() * r.height() }
+        return candidates.filter { it.isCheckable }.minByOrNull { area(it) } ?: candidates.minByOrNull { area(it) }
     }
 
     /** null = unknown */
