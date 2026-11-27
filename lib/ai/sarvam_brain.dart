@@ -42,10 +42,10 @@ class Interpretation {
           model: model ?? this.model,
           latencyMs: latencyMs ?? this.latencyMs);
 
-  /// Cost of this one call, in the provider's billing currency (USD for OpenAI, INR for Sarvam).
+  /// Cost of this one call (USD for OpenAI, INR for Sarvam), from published per-token prices.
   ({double amount, String currency})? get cost => Pricing.cost(provider, model, inputTokens, outputTokens, cachedTokens);
 
-  /// "OpenAI · 412 tokens · $0.00008 · 0.6 s"
+  /// "OpenAI · 752 tokens · \$0.00008 · 0.4 s"
   String get usageLine {
     final c = cost;
     final money = c == null ? '' : ' · ${c.currency == 'USD' ? '\$' : '₹'}${c.amount < 0.01 ? c.amount.toStringAsFixed(5) : c.amount.toStringAsFixed(3)}';
@@ -169,6 +169,49 @@ Rules:
         cachedTokens: (usage?['prompt_tokens_details'] as Map?)?['cached_tokens'] as int?,
         provider: 'sarvam',
         model: model).copyWith(latencyMs: sw.elapsedMilliseconds);
+  }
+
+  /// General chat completion (writing, answers, routing). Returns text + usage.
+  Future<({String text, int? input, int? output, int? cached, String? finish})> chat({
+    required String apiKey,
+    required String system,
+    required String user,
+    int maxTokens = 512,
+    double temperature = 0.6,
+    bool json = false,
+  }) async {
+    final body = {
+      'model': model,
+      'messages': [
+        {'role': 'system', 'content': system},
+        {'role': 'user', 'content': user},
+      ],
+      'temperature': temperature,
+      'max_tokens': maxTokens,
+      if (json) 'response_format': {'type': 'json_object'},
+    };
+    final http.Response res;
+    try {
+      res = await _client
+          .post(Uri.parse(_url),
+              headers: {'api-subscription-key': apiKey, 'Content-Type': 'application/json'}, body: jsonEncode(body))
+          .timeout(const Duration(seconds: 25));
+    } on TimeoutException {
+      throw SarvamBrainException('Sarvam took too long to answer', 408);
+    } on http.ClientException catch (e) {
+      throw SarvamBrainException('Network error talking to Sarvam: ${e.message}', 0);
+    }
+    if (res.statusCode != 200) throw SarvamBrainException(_err(res.body) ?? 'Sarvam chat failed', res.statusCode);
+    final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    final choice = (j['choices'] as List?)?.firstOrNull as Map?;
+    final usage = j['usage'] as Map?;
+    return (
+      text: ((choice?['message'] as Map?)?['content'] as String? ?? '').trim(),
+      input: usage?['prompt_tokens'] as int?,
+      output: usage?['completion_tokens'] as int?,
+      cached: (usage?['prompt_tokens_details'] as Map?)?['cached_tokens'] as int?,
+      finish: choice?['finish_reason'] as String?,
+    );
   }
 
   /// Tolerant JSON extraction (the model may wrap JSON in prose or code fences).

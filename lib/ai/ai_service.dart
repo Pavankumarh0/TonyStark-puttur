@@ -3,11 +3,14 @@ import 'dart:convert';
 import '../core/intent/local_intent.dart';
 import '../data/memory_repository.dart';
 import '../data/settings_store.dart';
+import '../core/privacy_filter.dart';
 import 'gemini_client.dart';
+import 'openai_brain.dart';
+import 'sarvam_brain.dart';
 
 class AiNotConfigured implements Exception {
   @override
-  String toString() => 'The Gemini API key is not set. Add it in Settings.';
+  String toString() => 'The OpenAI API key is not set. Add OPENAI_API_KEY to lib/.env and rebuild.';
 }
 
 /// A structured proposal from the AI router. The AI never executes anything: the local executor
@@ -51,16 +54,18 @@ class AiClarify extends AiProposal {
   const AiClarify(this.question);
 }
 
-/// Gemini is used only as writer, knowledge engine and fallback understanding — never for
-/// ordinary device operations, wake word, STOP or task state.
+/// OpenAI is LEO's brain for writing, answers and fallback understanding — never for ordinary
+/// device operations, wake word, STOP or task state (those run on the phone). Sarvam is voice only.
+/// Phone numbers, emails, OTPs and IDs are masked before every call and restored on the phone.
 class AiService {
   final SettingsStore settings;
   final MemoryRepository memory;
-  final GeminiClient client;
+  final GeminiClient client; // kept for compatibility; not used
+  final OpenAiBrain openai = OpenAiBrain();
 
   AiService(this.settings, this.memory, {GeminiClient? client}) : client = client ?? GeminiClient();
 
-  bool get isConfigured => settings.hasSecret(SecretKey.gemini);
+  bool get isConfigured => settings.hasSecret(SecretKey.openai);
 
   String get _persona =>
       'You are LEO, a calm, precise, witty-but-professional personal AI assistant. '
@@ -68,37 +73,42 @@ class AiService {
       'Never claim you performed device actions; you only write and answer. Never invent memories: '
       'only use the context provided. If unsure, say so briefly.';
 
-  void cancel() => client.cancelInFlight();
+  void cancel() => openai.cancel();
 
   Future<GeminiResult> _call(String purpose, String system, String user,
       {int maxTokens = 512, double temperature = 0.6, bool json = false}) async {
-    final key = settings.secret(SecretKey.gemini);
+    final key = settings.secret(SecretKey.openai);
     if (key == null || key.isEmpty) throw AiNotConfigured();
-    final model = settings.geminiModel;
+    final model = settings.openAiModel;
+    // Mask identifiers (keep the wording — writing needs it); restore them in the answer.
+    final red = PrivacyFilter.redact(user, messageBodies: false);
+    final sw = Stopwatch()..start();
     try {
-      final r = await client.generate(
-        apiKey: key,
-        model: model,
-        systemInstruction: system,
-        userText: user,
-        maxOutputTokens: maxTokens,
-        temperature: temperature,
-        json: json,
-      );
+      final r = await openai.chat(
+          apiKey: key, model: model, system: system, user: red.text, maxTokens: maxTokens, temperature: temperature, json: json);
+      final cost = Pricing.cost('openai', model, r.input, r.output, r.cached);
       await memory.logTokenUsage(
-        model: model,
-        purpose: purpose,
-        input: r.usage.promptTokens,
-        output: r.usage.outputTokens,
-        thoughts: r.usage.thoughtsTokens,
-        total: r.usage.totalTokens,
-        reported: r.usage.reported,
-        ok: true,
-      );
-      return r;
+          provider: 'openai', model: model, purpose: purpose, input: r.input, output: r.output,
+          total: (r.input ?? 0) + (r.output ?? 0), reported: r.input != null, ok: true);
+      await memory.logCloud(
+          provider: 'openai', model: model, purpose: purpose,
+          sentText: red.text.length > 400 ? '${red.text.substring(0, 400)}…' : red.text, maskedCount: red.count,
+          input: r.input, output: r.output, cached: r.cached, cost: cost?.amount, currency: cost?.currency,
+          latencyMs: r.ms, ok: true);
+      return GeminiResult(
+          red.restore(r.text),
+          GeminiUsage(promptTokens: r.input, outputTokens: r.output, totalTokens: (r.input ?? 0) + (r.output ?? 0)),
+          r.finish);
     } catch (e) {
-      // Failed calls are logged (without token numbers — we never estimate them).
-      await memory.logTokenUsage(model: model, purpose: purpose, reported: false, ok: false);
+      await memory.logTokenUsage(provider: 'openai', model: model, purpose: purpose, reported: false, ok: false);
+      await memory.logCloud(
+          provider: 'openai', model: model, purpose: purpose, sentText: red.text.length > 400 ? '${red.text.substring(0, 400)}…' : red.text,
+          maskedCount: red.count, latencyMs: sw.elapsedMilliseconds, ok: false);
+      if (e is SarvamBrainException && (e.status == 402 || e.status == 429)) {
+        throw Exception(e.message.toLowerCase().contains('quota') || e.message.toLowerCase().contains('billing')
+            ? 'OpenAI credits are used up — top up at platform.openai.com.'
+            : 'OpenAI is rate-limiting; try again in a moment.');
+      }
       rethrow;
     }
   }

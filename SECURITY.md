@@ -1,5 +1,7 @@
 # LEO — data privacy, security and cost
 
+**Providers:** Sarvam = voice only (speech-to-text, LEO's voice). OpenAI = the brain (understanding free-form requests, answers, writing). Everything else runs on the phone.
+
 LEO is a voice assistant that can operate the phone, so it sees personal things: who you call, your messages, what is on your screen. The design rule is **do it on the phone first, send as little as possible, show the user everything that leaves, and never act on another person without the user's OK.**
 
 ## 1. What stays on the phone (never sent anywhere)
@@ -19,8 +21,8 @@ LEO is a voice assistant that can operate the phone, so it sees personal things:
 | Goes to | When | What exactly | Protection |
 |---|---|---|---|
 | **Sarvam** speech-to-text | Only after "Leo" or a mic tap | The audio of that one request | HTTPS only (cleartext traffic is blocked app-wide) |
-| **Sarvam** text-to-speech | When LEO speaks | LEO's reply text | HTTPS |
-| **OpenAI** (or Sarvam) "understanding" | Only when on-device rules can't place a request, or for a general question | The request text, **with personal data masked**, plus the app's *name* (never its contents) and the last 4 turns, also masked | Masking, `store:false`, a ledger of every call, no screen contents |
+| **Sarvam** text-to-speech | When LEO speaks ordinary replies | LEO's reply text (private things use the phone's own voice) | HTTPS |
+| **OpenAI** (LEO's brain: understanding, answers, writing) | Only when on-device rules can't place a request, or for a general question | The request text, **with personal data masked**, plus the app's *name* (never its contents) and the last 4 turns, also masked | Masking, `store:false`, a ledger of every call, no screen contents |
 
 **Masking (`lib/core/privacy_filter.dart`).** Before anything is sent, the phone replaces these with placeholders:
 - phone numbers
@@ -73,19 +75,19 @@ To remove even the voice step, the next improvement is on-device speech recognit
 ## 4. Provider data policies (as published, 27 Nov 2026)
 
 - **OpenAI API:** API data is not used for training by default. Inputs and outputs may be kept up to 30 days for abuse monitoring, then deleted. LEO sends `store: false`. Zero Data Retention exists but needs OpenAI's approval, so it isn't enabled for this prototype.
-- **Sarvam:** used for Indian-language speech and as the fallback understanding model. Check Sarvam's current terms for its retention period before production use.
+- **Sarvam:** used for voice only (Indian-language speech-to-text and LEO's voice). Check Sarvam's current terms for its retention period before production use.
 
 ## 5. Speed and tokens
 
 | Step | Where | Typical time | Tokens |
 |---|---|---|---|
 | Everyday command (≈ most requests) | Phone | < 100 ms after transcription | 0 |
-| Understanding a free-form request | OpenAI `gpt-4o-mini` or Sarvam | 0.26–0.5 s (measured on Sarvam) | ~735 in (mostly cached) + ~15–20 out |
+| Understanding a free-form request | OpenAI `gpt-4o-mini` | ~0.3–0.6 s (same prompt measured at 0.26–0.5 s) | ~735 in (mostly cached) + ~15–20 out |
 | Speech-to-text / text-to-speech | Sarvam | ~1 s each | billed per second / character, not tokens |
 
 How tokens are kept low:
 - **On-device first.** Only requests the phone can't handle reach a model.
-- **One fixed system prompt, always sent first.** Providers cache it: on Sarvam, 640–704 of ~735 prompt tokens were cache hits.
+- **One fixed system prompt, always sent first.** Providers cache it automatically (on our test, 640–704 of ~735 prompt tokens were cache hits).
 - **Strict JSON with one field.** That cut the output from 39–53 tokens to 15–18 per request (output is the most expensive token).
 - **Only the last 4 turns**, 120 characters each, and the app *name* rather than its contents.
 

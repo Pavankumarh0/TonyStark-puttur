@@ -106,11 +106,7 @@ class SettingsStore extends ChangeNotifier {
   bool get speakResponses => _prefs.getBool('speak_responses') ?? true;
   set speakResponses(bool v) => _setB('speak_responses', v);
 
-  /// Which cloud model explains free-form requests to LEO: auto (OpenAI if a key is set, else Sarvam) | openai | sarvam.
-  String get understandingProvider => _prefs.getString('understanding_provider') ?? 'auto';
-  set understandingProvider(String v) => _set('understanding_provider', v);
-
-  /// OpenAI model for understanding. Small + non-reasoning = fast and cheap.
+  /// OpenAI model for LEO's brain. Small + non-reasoning = fast and cheap.
   String get openAiModel => _prefs.getString('openai_model') ?? 'gpt-4o-mini';
   set openAiModel(String v) => _set('openai_model', v.trim());
 
@@ -122,7 +118,7 @@ class SettingsStore extends ChangeNotifier {
   bool get secureScreen => _prefs.getBool('secure_screen') ?? false;
   set secureScreen(bool v) => _setB('secure_screen', v);
 
-  /// Let Sarvam's chat model understand free-form speech and turn it into clear LEO commands.
+  /// Let OpenAI understand free-form speech and turn it into clear LEO commands.
   bool get sarvamUnderstanding => _prefs.getBool('sarvam_understanding') ?? true;
   set sarvamUnderstanding(bool v) => _setB('sarvam_understanding', v);
 

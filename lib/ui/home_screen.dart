@@ -620,7 +620,7 @@ class _Bubble extends StatelessWidget {
                 padding: const EdgeInsets.only(left: 4),
                 child: Icon(Icons.mic, size: 10, color: user ? JColors.ink.withValues(alpha: 0.6) : JColors.mute)),
           if (!user && m.route == 'ai')
-            Padding(padding: const EdgeInsets.only(left: 6), child: Text('GEMINI', style: monoLabel(color: JColors.violet, size: 8))),
+            Padding(padding: const EdgeInsets.only(left: 6), child: Text('OPENAI', style: monoLabel(color: JColors.violet, size: 8))),
           if (!user && m.route == 'local')
             Padding(padding: const EdgeInsets.only(left: 6), child: Text('ON-DEVICE', style: monoLabel(color: JColors.volt, size: 8))),
         ]),

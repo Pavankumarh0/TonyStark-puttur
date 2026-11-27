@@ -1,5 +1,5 @@
-import '../ai/openai_brain.dart';
 import '../core/privacy_filter.dart';
+import '../ai/openai_brain.dart';
 import '../ai/sarvam_brain.dart';
 import 'dart:async';
 
@@ -63,7 +63,7 @@ class JarvisOrchestrator extends ChangeNotifier {
   final MemoryRepository memory;
   final ContextBuilder contextBuilder;
   final AiService ai;
-  final SarvamBrain sarvamBrain = SarvamBrain();
+  final SarvamBrain sarvamBrain = SarvamBrain(); // prompt + parsing shared with the OpenAI brain
   final OpenAiBrain openAiBrain = OpenAiBrain();
   final MicEngine mic;
   final SpeechInput speechIn;
@@ -1117,9 +1117,10 @@ class JarvisOrchestrator extends ChangeNotifier {
 
   String _friendlyError(Object e) {
     final a = settings.address;
-    if (e is AiNotConfigured) return 'I need a Gemini API key for that, $a. Please add it in Settings.';
-    if (e is GeminiException && (e.status == 429 || e.message.toLowerCase().contains('quota'))) {
-      return 'My Gemini quota is used up for now, $a. Everyday tasks — apps, calls, music, messages — still work '
+    if (e is AiNotConfigured) return 'That needs my OpenAI brain, $a — add the OpenAI key to lib/.env and rebuild. Everyday tasks still work.';
+    if ((e is GeminiException && (e.status == 429 || e.message.toLowerCase().contains('quota'))) ||
+        '$e'.contains('credits are used up') || '$e'.contains('rate-limiting')) {
+      return 'My OpenAI credits are used up for now, $a. Everyday tasks — apps, calls, music, messages — still work '
           'locally; writing and questions will work again once the quota resets.';
     }
     final s = e.toString().replaceFirst('Exception: ', '');
@@ -1371,7 +1372,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     if (!await device.accessibilityEnabled()) {
       throw Exception('To operate apps for you I need the LEO accessibility service. Turn it on in Permissions.');
     }
-    // Brain: on-device model (free, offline) when chosen & downloaded, else Gemini.
+    // Brain: on-device model (free, offline) when chosen & downloaded, else OpenAI.
     final llm = await device.llmStatus();
     final useLocal = settings.agentBrain == 'local' && llm['installed'] == true;
     if (!useLocal && !ai.isConfigured) throw AiNotConfigured();
@@ -1381,7 +1382,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     final brain = LocalAgentBrain(device, apps);
     tr.setParams({'brain': useLocal ? 'on-device' : 'gemini'});
     await _say('On it, $a. ${useLocal ? 'Working on-device. ' : ''}I\'ll show each step — say "stop" any time.', kind: 'command');
-    final brainLabel = useLocal ? 'ON-DEVICE' : 'GEMINI';
+    final brainLabel = useLocal ? 'ON-DEVICE' : 'OPENAI';
     await device.overlayShow();
     try {
       return await _agentLoop(tr, goal, useLocal, brain, brainLabel);
@@ -1536,7 +1537,7 @@ class JarvisOrchestrator extends ChangeNotifier {
         'rule' => 'decided by rule',
         'match' => 'matched your words',
         'model' => 'chosen by on-device model',
-        _ => useLocal ? null : 'chosen by Gemini',
+        _ => useLocal ? null : 'chosen by OpenAI',
       };
       tr.addStep(TaskStep(id: sid, description: describe, irreversible: sensitive, detail: how));
       unawaited(device.overlayUpdate(
@@ -2923,7 +2924,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     final q = tr.snapshot.params['text'] as String;
     if (tr.stepStatus('context') == null) {
       tr.addStep(const TaskStep(id: 'context', description: 'Retrieve relevant memory (local)'));
-      tr.addStep(const TaskStep(id: 'ai', description: 'Ask Gemini'));
+      tr.addStep(const TaskStep(id: 'ai', description: 'Ask OpenAI'));
     }
     if (!ai.isConfigured) throw AiNotConfigured();
     final ctx = await tr.step('context', () => contextBuilder.build(sessionId: sessionId, query: q));
@@ -2940,7 +2941,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     final kind = WritingKind.values.byName(tr.snapshot.params['writeKind'] as String);
     if (tr.stepStatus('context') == null) {
       tr.addStep(const TaskStep(id: 'context', description: 'Retrieve relevant memory (local)'));
-      tr.addStep(const TaskStep(id: 'ai', description: 'Draft with Gemini'));
+      tr.addStep(const TaskStep(id: 'ai', description: 'Draft with OpenAI'));
     }
     if (!ai.isConfigured) throw AiNotConfigured();
     final ctx = await tr.step('context', () => contextBuilder.build(sessionId: sessionId, query: q, includeRecent: kind == WritingKind.rewrite));
@@ -2980,7 +2981,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     final q = tr.snapshot.params['text'] as String;
     if (tr.stepStatus('context') == null) {
       tr.addStep(const TaskStep(id: 'context', description: 'Retrieve relevant memory (local)'));
-      tr.addStep(const TaskStep(id: 'ai', description: 'Understand request with Gemini'));
+      tr.addStep(const TaskStep(id: 'ai', description: 'Understand request with OpenAI'));
     }
     if (!ai.isConfigured) throw AiNotConfigured();
     final ctx = await tr.step('context', () => contextBuilder.build(sessionId: sessionId, query: q));
@@ -3028,17 +3029,10 @@ class JarvisOrchestrator extends ChangeNotifier {
   }
 
   // ------------------------------------------------------------------ speaking & storage
-  // ------------------------------------------------------------------ cloud understanding (OpenAI / Sarvam)
-  /// OpenAI when chosen (or "auto" with a key), else Sarvam. null = no cloud understanding available.
-  String? get _cloudProvider {
-    if (!settings.sarvamUnderstanding) return null;
-    final hasOpenAi = settings.hasSecret(SecretKey.openai), hasSarvam = settings.hasSecret(SecretKey.sarvam);
-    return switch (settings.understandingProvider) {
-      'openai' => hasOpenAi ? 'openai' : (hasSarvam ? 'sarvam' : null),
-      'sarvam' => hasSarvam ? 'sarvam' : null,
-      _ => hasOpenAi ? 'openai' : (hasSarvam ? 'sarvam' : null),
-    };
-  }
+  // ------------------------------------------------------------------ cloud understanding (OpenAI brain)
+  /// LEO's brain is OpenAI (Sarvam is voice only). null = cloud understanding off or no key.
+  String? get _cloudProvider =>
+      settings.sarvamUnderstanding && settings.hasSecret(SecretKey.openai) ? 'openai' : null;
 
   bool get _sarvamReady => _cloudProvider != null;
 
@@ -3074,17 +3068,14 @@ class JarvisOrchestrator extends ChangeNotifier {
     Interpretation? r;
     String? error;
     try {
-      r = provider == 'openai'
-          ? await openAiBrain.interpret(
-              apiKey: settings.secret(SecretKey.openai)!, model: settings.openAiModel,
-              utterance: safeUtterance, screenApp: screenApp, recentTurns: safeRecent)
-          : await sarvamBrain.interpret(
-              apiKey: settings.secret(SecretKey.sarvam)!, utterance: safeUtterance, screenApp: screenApp, recentTurns: safeRecent);
+      r = await openAiBrain.interpret(
+          apiKey: settings.secret(SecretKey.openai)!, model: settings.openAiModel,
+          utterance: safeUtterance, screenApp: screenApp, recentTurns: safeRecent);
     } catch (e) {
       error = '$e';
       debugPrint('LEO cloud-understand ($provider) failed: $e');
     }
-    final model = provider == 'openai' ? settings.openAiModel : SarvamBrain.model;
+    final model = settings.openAiModel;
     final cost = r?.cost;
     unawaited(memory.logCloud(
         provider: provider, model: model, purpose: 'understand',
@@ -3115,7 +3106,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     if (t != null && t.snapshot.state.isActive) {
       t.addStep(TaskStep(
           id: 'cloud',
-          description: 'Understood by ${provider == 'openai' ? 'OpenAI' : 'Sarvam'}'
+          description: 'Understood by OpenAI'
               '${res.commands.length > 1 ? ' (${res.commands.length} steps)' : ''}',
           status: StepStatus.done,
           detail: '${res.usageLine}${red.count > 0 ? ' · ${red.count} private item${red.count == 1 ? '' : 's'} masked' : ''}'));

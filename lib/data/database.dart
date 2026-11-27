@@ -23,7 +23,7 @@ class JarvisDatabase {
         CREATE TABLE IF NOT EXISTS cloud_log(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           created_at INTEGER NOT NULL,
-          provider TEXT NOT NULL,       -- openai | sarvam
+          provider TEXT NOT NULL,       -- openai (brain) | sarvam
           model TEXT NOT NULL,
           purpose TEXT NOT NULL,        -- understand
           sent_text TEXT NOT NULL,      -- exactly what was sent (after masking)

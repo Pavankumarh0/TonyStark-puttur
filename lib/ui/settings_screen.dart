@@ -88,22 +88,21 @@ class SettingsScreen extends StatelessWidget {
         const SizedBox(height: 20),
         _label('API KEYS (built into the app — tap only to override)'),
         _KeyTile(
-          k: SecretKey.gemini,
-          title: 'Gemini API key',
-          help: 'aistudio.google.com → Get API key',
-          onSaved: () {},
-        ),
-        _KeyTile(
           k: SecretKey.sarvam,
-          title: 'Sarvam API key',
-          help: 'dashboard.sarvam.ai → API keys (voice in/out)',
+          title: 'Sarvam API key (voice)',
+          help: 'dashboard.sarvam.ai → API keys. Used only for speech-to-text and LEO\'s voice.',
           onSaved: () {},
         ),
         _KeyTile(
           k: SecretKey.openai,
-          title: 'OpenAI API key (optional)',
-          help: 'platform.openai.com → API keys. Used only to understand free-form requests; personal data is masked first.',
+          title: 'OpenAI API key (brain)',
+          help: 'platform.openai.com → API keys. Understands free-form requests, writes, answers. Personal data is masked first.',
           onSaved: () {},
+        ),
+        _TextPref(
+          title: 'OpenAI model',
+          value: s.openAiModel,
+          onChanged: (v) => s.openAiModel = v,
         ),
         _KeyTile(
           k: SecretKey.picovoice,
@@ -120,14 +119,6 @@ class SettingsScreen extends StatelessWidget {
         const SizedBox(height: 20),
         _label('PHONE CONTROL BRAIN'),
         const _BrainCard(),
-        const SizedBox(height: 20),
-        _label('GEMINI'),
-        _TextPref(
-          title: 'Model',
-          value: s.geminiModel,
-          onChanged: (v) => s.geminiModel = v,
-        ),
-        _VerifyGemini(settings: s),
         const SizedBox(height: 20),
         _label('VOICE (SARVAM)'),
         _TextPref(
@@ -197,30 +188,11 @@ class SettingsScreen extends StatelessWidget {
         SwitchListTile(
           value: s.sarvamUnderstanding,
           onChanged: (v) => s.sarvamUnderstanding = v,
-          title: const Text('Smart understanding (cloud)'),
+          title: const Text('Smart understanding (OpenAI brain)'),
           subtitle: const Text(
-              'When LEO isn\'t sure what you meant, a cloud model rewrites it into clear steps (and answers questions). '
+              'When LEO isn\'t sure what you meant, OpenAI rewrites it into clear steps (and answers questions). '
               'Everyday commands stay on the phone. Phone numbers, emails, OTPs and IDs are masked before sending.',
               style: TextStyle(color: JColors.dim)),
-        ),
-        ListTile(
-          title: const Text('Understanding model'),
-          subtitle: Text(
-              switch (s.understandingProvider) {
-                'openai' => 'OpenAI · ${s.openAiModel}',
-                'sarvam' => 'Sarvam · sarvam-105b-conversations',
-                _ => s.hasSecret(SecretKey.openai) ? 'Auto → OpenAI · ${s.openAiModel}' : 'Auto → Sarvam (no OpenAI key)',
-              },
-              style: const TextStyle(color: JColors.dim)),
-          trailing: DropdownButton<String>(
-            value: s.understandingProvider,
-            onChanged: (v) => s.understandingProvider = v ?? 'auto',
-            items: const [
-              DropdownMenuItem(value: 'auto', child: Text('Auto')),
-              DropdownMenuItem(value: 'openai', child: Text('OpenAI')),
-              DropdownMenuItem(value: 'sarvam', child: Text('Sarvam')),
-            ],
-          ),
         ),
         SwitchListTile(
           value: s.privateVoice,
@@ -600,7 +572,7 @@ class _BrainCardState extends State<_BrainCard> {
             const SizedBox(height: 8),
             const Text(
               'Qwen 2.5 · 1.5B (Apache-2.0) runs on your phone to operate apps step by step — no API key, works offline, '
-              'nothing leaves the phone. Less clever than Gemini on long tasks.',
+              'nothing leaves the phone. Less clever than the cloud on long tasks.',
               style: TextStyle(color: JColors.mute, fontSize: 12, height: 1.4),
             ),
             if (downloading || (!installed && bytes > 0)) ...[
@@ -680,7 +652,7 @@ class _BrainCardState extends State<_BrainCard> {
                 ),
                 ButtonSegment(
                   value: 'gemini',
-                  label: Text('Gemini cloud'),
+                  label: Text('OpenAI cloud'),
                   icon: Icon(Icons.cloud_outlined, size: 16),
                 ),
               ],
@@ -697,7 +669,7 @@ class _BrainCardState extends State<_BrainCard> {
               const Padding(
                 padding: EdgeInsets.only(top: 8),
                 child: Text(
-                  'Until the model is downloaded, LEO uses Gemini (if it has quota).',
+                  'Until the model is downloaded, LEO uses OpenAI (the screen\'s text is sent, personal numbers masked).',
                   style: TextStyle(color: JColors.mute, fontSize: 11),
                 ),
               ),

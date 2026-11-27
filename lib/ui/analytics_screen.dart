@@ -5,7 +5,7 @@ import '../data/memory_repository.dart';
 import '../orchestrator/jarvis_orchestrator.dart';
 import 'theme.dart';
 
-/// Token & routing analytics. Token numbers come ONLY from Gemini's usageMetadata — never estimated.
+/// Token & routing analytics. Token numbers come ONLY from the provider's reported usage — never estimated.
 class AnalyticsScreen extends StatefulWidget {
   const AnalyticsScreen({super.key});
 
@@ -56,12 +56,12 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
             Row(children: [
               Expanded(child: _tile('Completed locally', '${u.localTasks}', JColors.green, 'no AI call')),
               const SizedBox(width: 10),
-              Expanded(child: _tile('Needed AI', '${u.aiTasks}', JColors.violet, 'Gemini')),
+              Expanded(child: _tile('Needed AI', '${u.aiTasks}', JColors.violet, 'OpenAI')),
             ]),
             const SizedBox(height: 10),
             _ratioBar(u.localTasks, u.aiTasks),
             const SizedBox(height: 20),
-            _section('GEMINI'),
+            _section('OPENAI BRAIN (writing, answers, understanding)'),
             Row(children: [
               Expanded(child: _tile('Requests', '${u.geminiRequests}', JColors.cyan, '${u.geminiFailures} failed')),
               const SizedBox(width: 10),

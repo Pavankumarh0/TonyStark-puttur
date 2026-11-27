@@ -22,6 +22,59 @@ class OpenAiBrain {
     _client = http.Client();
   }
 
+  /// General chat completion (writing, answers, routing, agent steps).
+  Future<({String text, int? input, int? output, int? cached, String? finish, int ms})> chat({
+    required String apiKey,
+    required String model,
+    required String system,
+    required String user,
+    int maxTokens = 512,
+    double temperature = 0.6,
+    bool json = false,
+  }) async {
+    final body = {
+      'model': model,
+      'messages': [
+        {'role': 'system', 'content': system},
+        {'role': 'user', 'content': user},
+      ],
+      'temperature': temperature,
+      'max_completion_tokens': maxTokens,
+      if (json) 'response_format': {'type': 'json_object'},
+      'store': false,
+    };
+    final sw = Stopwatch()..start();
+    final http.Response res;
+    try {
+      res = await _client
+          .post(Uri.parse(_url),
+              headers: {'Authorization': 'Bearer $apiKey', 'Content-Type': 'application/json'}, body: jsonEncode(body))
+          .timeout(const Duration(seconds: 25));
+    } on TimeoutException {
+      throw SarvamBrainException('OpenAI took too long to answer', 408);
+    } on http.ClientException catch (e) {
+      throw SarvamBrainException('Network error talking to OpenAI: ${e.message}', 0);
+    }
+    if (res.statusCode != 200) {
+      String? msg;
+      try {
+        msg = ((jsonDecode(res.body) as Map)['error'] as Map?)?['message'] as String?;
+      } catch (_) {}
+      throw SarvamBrainException(msg ?? 'OpenAI request failed', res.statusCode);
+    }
+    final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    final choice = (j['choices'] as List?)?.firstOrNull as Map?;
+    final usage = j['usage'] as Map?;
+    return (
+      text: ((choice?['message'] as Map?)?['content'] as String? ?? '').trim(),
+      input: usage?['prompt_tokens'] as int?,
+      output: usage?['completion_tokens'] as int?,
+      cached: (usage?['prompt_tokens_details'] as Map?)?['cached_tokens'] as int?,
+      finish: choice?['finish_reason'] as String?,
+      ms: sw.elapsedMilliseconds,
+    );
+  }
+
   Future<Interpretation?> interpret({
     required String apiKey,
     required String model,

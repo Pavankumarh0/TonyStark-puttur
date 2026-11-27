@@ -44,11 +44,14 @@ class PrivacyFilter {
     ('OTP', RegExp(r'(?<![\d:₹$.,/])\b\d{6}\b(?![:\d])')),
   ];
 
-  static Redaction redact(String input) {
+  /// [messageBodies] false keeps dictated message text and quotes (needed when asking the model to
+  /// WRITE something) while still masking numbers, emails, OTPs and IDs.
+  static Redaction redact(String input, {bool messageBodies = true}) {
     var text = input;
     final secrets = <String, String>{};
     final counters = <String, int>{};
     for (final (kind, re) in _rules) {
+      if (!messageBodies && (kind == 'MESSAGE' || kind == 'QUOTE')) continue;
       text = text.replaceAllMapped(re, (m) {
         final original = m.group(0)!;
         if (original.trim().isEmpty || original.startsWith('<')) return original;
