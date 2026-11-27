@@ -1242,14 +1242,26 @@ class JarvisOrchestrator extends ChangeNotifier {
     if (settings.agentBrain == 'local' && llm['installed'] != true && !ai.isConfigured) {
       throw Exception('Download the on-device brain in Settings (one time, 1.6 GB) so I can operate apps without a key.');
     }
-    final brain = LocalAgentBrain(device);
+    final brain = LocalAgentBrain(device, apps);
     tr.setParams({'brain': useLocal ? 'on-device' : 'gemini'});
     await _say('On it, $a. ${useLocal ? 'Working on-device. ' : ''}I\'ll show each step — say "stop" any time.', kind: 'command');
+    final brainLabel = useLocal ? 'ON-DEVICE' : 'GEMINI';
+    await device.overlayShow();
+    try {
+      return await _agentLoop(tr, goal, useLocal, brain, brainLabel);
+    } finally {
+      unawaited(device.overlayHide());
+    }
+  }
+
+  Future<String?> _agentLoop(TaskTracker tr, String goal, bool useLocal, LocalAgentBrain brain, String brainLabel) async {
+    final a = settings.address;
     final history = <String>[];
     final installed = (await apps.apps()).map((x) => x.label).toList();
     const maxSteps = 18;
     for (var step = 1; step <= maxSteps; step++) {
       await tr.control.checkpoint();
+      unawaited(device.overlayUpdate(title: 'LEO · STEP $step · THINKING ($brainLabel)', detail: 'Reading the screen…'));
       final dump = await device.screenDump(max: useLocal ? 40 : 70);
       if (dump['ok'] != true) {
         if (dump['reason'] == 'blocked_app') {
@@ -1281,7 +1293,13 @@ class JarvisOrchestrator extends ChangeNotifier {
         return summary ?? 'Done';
       }
       final ask = (plan['ask'] as String?)?.trim();
+      final raw = plan['raw'] as String?;
+      if (raw != null && plan['action'] == null && plan['done'] != true) {
+        // Show what the on-device model actually said, so failures are understandable.
+        tr.addStep(TaskStep(id: 'raw$step', description: 'Model reply could not be used', status: StepStatus.failed, detail: '"$raw"'));
+      }
       if (ask != null && ask.isNotEmpty) {
+        unawaited(device.overlayUpdate(title: 'LEO · NEEDS YOU', detail: ask, warn: true));
         final answer = await _askFreeText(tr, ask);
         history.add('$step. asked user "$ask" → "$answer"');
         continue;
@@ -1315,7 +1333,18 @@ class JarvisOrchestrator extends ChangeNotifier {
           (type == 'tap' && _sensitiveWords.hasMatch(screenLine)) ||
           (type == 'submit' && _sensitiveWords.hasMatch(describe));
       final sid = 's$step';
-      tr.addStep(TaskStep(id: sid, description: describe, irreversible: sensitive));
+      final how = switch (plan['how']) {
+        'rule' => 'decided by rule',
+        'match' => 'matched your words',
+        'model' => 'chosen by on-device model',
+        _ => useLocal ? null : 'chosen by Gemini',
+      };
+      tr.addStep(TaskStep(id: sid, description: describe, irreversible: sensitive, detail: how));
+      unawaited(device.overlayUpdate(
+          title: sensitive ? 'LEO · WAITING FOR YOUR OK' : 'LEO · STEP $step · $brainLabel',
+          detail: how == null ? describe : '$describe  ·  $how',
+          highlightIndex: index,
+          warn: sensitive));
       if (sensitive) {
         final reply = await _askApproval(
             tr,

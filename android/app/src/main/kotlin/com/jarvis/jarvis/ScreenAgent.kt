@@ -80,6 +80,13 @@ object ScreenAgent {
         return mapOf("ok" to true, "package" to pkg, "screen" to lines.toString(), "count" to nodes.size)
     }
 
+    /** Screen bounds [l,t,r,b] of element [index] from the last dump (for the overlay highlight). */
+    fun boundsOf(index: Int?): IntArray? {
+        val n = index?.let { lastNodes.getOrNull(it) } ?: return null
+        val r = Rect(); n.getBoundsInScreen(r)
+        return intArrayOf(r.left, r.top, r.right, r.bottom)
+    }
+
     private fun clickable(n: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         var c: AccessibilityNodeInfo? = n
         while (c != null && !c.isClickable) c = c.parent

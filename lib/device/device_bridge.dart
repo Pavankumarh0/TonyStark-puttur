@@ -182,6 +182,12 @@ class DeviceBridge {
   Future<Map<String, dynamic>> screenAct(String type, {int? index, String? text, String? dir, String? package}) async =>
       await _ch.invokeMapMethod<String, dynamic>('screenAct', {'type': type, 'index': index, 'text': text, 'dir': dir, 'package': package}) ??
       const {'ok': false};
+  // Live overlay shown above other apps while the agent operates them.
+  Future<void> overlayShow() => _ch.invokeMethod('overlayShow');
+  Future<void> overlayUpdate({String? title, String? detail, int? highlightIndex, bool warn = false}) =>
+      _ch.invokeMethod('overlayUpdate', {'title': title, 'detail': detail, 'index': highlightIndex, 'warn': warn});
+  Future<void> overlayHide() => _ch.invokeMethod('overlayHide');
+
   Future<bool> isBlockedApp(String pkg) async => await _ch.invokeMethod<bool>('isBlockedApp', {'package': pkg}) ?? false;
   /// Real on/off via Quick Settings. status: already | changed | unknown | unchanged | not_found | accessibility_off
   Future<Map<String, dynamic>> quickToggle(String kind, bool on) async =>

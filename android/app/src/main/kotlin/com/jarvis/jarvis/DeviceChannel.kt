@@ -171,6 +171,13 @@ object DeviceChannel {
                 ScreenAgent.act(app, call.argument<String>("type") ?: "", call.argument<Int>("index"),
                     call.argument<String>("text"), call.argument<String>("dir"), call.argument<String>("package"))
             }
+            "overlayShow" -> { AgentOverlay.show(app); result.success(null) }
+            "overlayUpdate" -> {
+                AgentOverlay.update(call.argument<String>("title"), call.argument<String>("detail"),
+                    ScreenAgent.boundsOf(call.argument<Int>("index")), call.argument<Boolean>("warn") == true)
+                result.success(null)
+            }
+            "overlayHide" -> { AgentOverlay.hide(); result.success(null) }
             "isBlockedApp" -> result.success(ScreenAgent.isBlocked(call.argument<String>("package")))
             "quickToggle" -> background(result) { QuickToggles.set(call.argument<String>("kind") ?: "", call.argument<Boolean>("on") == true) }
             // ---------------- notification replies
