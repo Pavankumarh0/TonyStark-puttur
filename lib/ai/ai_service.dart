@@ -4,6 +4,7 @@ import '../core/intent/local_intent.dart';
 import '../data/memory_repository.dart';
 import '../data/settings_store.dart';
 import '../core/privacy_filter.dart';
+import 'compose_prompts.dart';
 import 'gemini_client.dart';
 import 'openai_brain.dart';
 import 'sarvam_brain.dart';
@@ -158,6 +159,22 @@ class AiService {
           'Return JSON {"content": string}. No greeting fluff, no emojis unless clearly appropriate.',
       context.isEmpty ? 'Topic: $topic' : '$context\n\nTopic: $topic',
       maxTokens: 200,
+      json: true,
+    );
+    final j = _parseJson(r.text);
+    return ((j?['content'] as String?) ?? r.text).trim();
+  }
+
+  /// A well-written WhatsApp message for requests that need some thought ("explain to my manager why I
+  /// won't be coming today", "send a polite message…"). [request] is the user's whole instruction.
+  /// The user reviews and approves the text before anything is sent.
+  Future<String> composeWellWritten(String recipient, String request, String context) async {
+    final r = await _call(
+      'writing',
+      ComposePrompts.wellWritten(recipient),
+      context.isEmpty ? 'Request: $request' : '$context\n\nRequest: $request',
+      maxTokens: 350,
+      temperature: 0.5,
       json: true,
     );
     final j = _parseJson(r.text);

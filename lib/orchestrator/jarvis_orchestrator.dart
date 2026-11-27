@@ -12,6 +12,7 @@ import '../ai/gemini_client.dart';
 import '../ai/local_agent_brain.dart';
 import '../core/approval/approval_gate.dart';
 import '../core/greeting.dart';
+import '../core/intent/compose_detector.dart';
 import '../core/intent/local_classifier.dart';
 import '../core/intent/local_intent.dart';
 import '../core/intent/local_intent_engine.dart';
@@ -451,6 +452,11 @@ class JarvisOrchestrator extends ChangeNotifier {
       return;
     }
     var intent = engine.parse(raw, ctx: _ctx);
+    // "Write / explain / politely…" → OpenAI drafts a well-written message or email (approved before sending).
+    // Plain dictation is untouched. Never while LEO is waiting for an answer to its own question.
+    if (_freeTextWait == null && _choiceWait == null && _approvalWait == null && ai.isConfigured) {
+      intent = ComposeDetector.upgrade(intent, _currentUtterance);
+    }
     // Rules didn't match → try the on-device trained model before ever considering AI.
     // A step planned by the brain that no built-in command covers ("start the stopwatch") is done on
     // screen by the agent — never silently dropped.
@@ -657,6 +663,7 @@ class JarvisOrchestrator extends ChangeNotifier {
             'isGroup': intent.isGroup,
             'message': intent.message,
             'composeTopic': intent.composeTopic,
+            'composeLong': intent.composeLong,
           },
         );
       case ForgetEverythingIntent():
@@ -3107,9 +3114,12 @@ class JarvisOrchestrator extends ChangeNotifier {
       var message = tr.snapshot.params['message'] as String?;
       final topic = tr.snapshot.params['composeTopic'] as String?;
       if ((message == null || message.isEmpty) && topic != null) {
-        tr.updateStep('message', description: 'Compose message with AI writer');
+        final long = tr.snapshot.params['composeLong'] == true;
+        tr.updateStep('message', description: long ? 'Write the message with OpenAI' : 'Compose message with AI writer');
         final ctx = await contextBuilder.build(sessionId: sessionId, query: topic, includeRecent: false);
-        message = await tr.control.guard(ai.composeMessage(recipientQuery, topic, ctx.text));
+        message = await tr.control.guard(long
+            ? ai.composeWellWritten(recipientQuery, topic, ctx.text)
+            : ai.composeMessage(recipientQuery, topic, ctx.text));
       }
       if (message == null || message.isEmpty) {
         message = await _askFreeText(tr, 'What should the message say, ${settings.address}?');

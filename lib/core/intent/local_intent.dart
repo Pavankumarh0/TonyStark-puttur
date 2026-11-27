@@ -88,12 +88,17 @@ class SendMessageIntent extends LocalIntent {
   final String? composeTopic;
   final bool isGroup;
 
+  /// The user asked for a well-written message (explain, polite, detailed…): OpenAI writes a fuller
+  /// message from [composeTopic] (the user's whole request) instead of a one-liner.
+  final bool composeLong;
+
   const SendMessageIntent({
     required this.app,
     required this.recipient,
     this.message,
     this.composeTopic,
     required this.isGroup,
+    this.composeLong = false,
   });
 
   @override
