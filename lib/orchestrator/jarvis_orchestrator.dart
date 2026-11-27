@@ -604,6 +604,8 @@ class JarvisOrchestrator extends ChangeNotifier {
         _startTask('Shop: $query on $store', 'shop', TaskRoute.local, {'query': query, 'store': store, 'cart': addToCart});
       case ScreenCommandIntent(:final command, :final arg):
         _startTask('Screen: ${command.name}${arg == null ? '' : ' "$arg"'}', 'screen_cmd', TaskRoute.local, {'cmd': command.name, 'arg': arg});
+      case EmailIntent(:final to, :final subject, :final body, :final topic):
+        _startTask('Email $to', 'email_send', TaskRoute.local, {'to': to, 'subject': subject, 'body': body, 'topic': topic});
       case AskAppIntent(:final prompt, :final app):
         _startTask('Ask ${app ?? 'the app'}: $prompt', 'ask_app', TaskRoute.local, {'prompt': prompt, 'app': app});
       case ReadChatIntent(:final who):
@@ -651,7 +653,7 @@ class JarvisOrchestrator extends ChangeNotifier {
         NavigateIntent() || WebSearchIntent() || FlashlightIntent() || CameraIntent() || SettingsPanelIntent() ||
         SignInIntent() || ReplyIntent() || DismissAlarmIntent() || SnoozeAlarmIntent() || ListRemindersIntent() ||
         DeleteReminderIntent() || CallControlIntent() || FindFileIntent() || OpenWebsiteIntent() || InstallAppIntent() ||
-        ShopIntent() || ScreenCommandIntent() || ReadChatIntent() || AskAppIntent() => 'command',
+        ShopIntent() || ScreenCommandIntent() || ReadChatIntent() || AskAppIntent() || EmailIntent() => 'command',
         PhoneTaskIntent() => 'agent',
         KnowledgeIntent() => 'knowledge',
         WriteIntent() => 'write',
@@ -1037,6 +1039,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     'screen_cmd': _runScreenCommand,
     'read_chat': _runReadChat,
     'ask_app': _runAskApp,
+    'email_send': _runEmail,
   };
 
   static const _kindToLabel = {
@@ -2253,6 +2256,112 @@ class JarvisOrchestrator extends ChangeNotifier {
       if (seen.add(s.label.toLowerCase())) ties.add((index: s.index, label: s.label));
     }
     return ties;
+  }
+
+  /// Compose → (approval of the exact email) → verify the draft on screen → Send.
+  Future<String?> _runEmail(TaskTracker tr) async {
+    final a = settings.address;
+    final p = tr.snapshot.params;
+    var to = (p['to'] as String).trim();
+    var subject = p['subject'] as String?;
+    var body = p['body'] as String?;
+    final topic = p['topic'] as String?;
+    tr.addStep(const TaskStep(id: 'to', description: 'Find the recipient'));
+    tr.addStep(const TaskStep(id: 'write', description: 'Prepare the email'));
+    tr.addStep(const TaskStep(id: 'compose', description: 'Open it in Gmail'));
+    tr.addStep(const TaskStep(id: 'approval', description: 'Get your approval'));
+    tr.addStep(const TaskStep(id: 'send', description: 'Send', irreversible: true));
+
+    // 1) Recipient: an address as said, or a contact's email.
+    tr.updateStep('to', status: StepStatus.running);
+    if (!to.contains('@')) {
+      final found = await device.contactEmails(to);
+      if (found.isEmpty) throw Exception('I couldn\'t find an email address for $to in your contacts. Say the address instead.');
+      var pick = found.first;
+      if (found.length > 1) {
+        final i = await _askChoice('Which address for $to?', [for (final f in found) '${f['name']} · ${f['email']}'], tr: tr);
+        pick = found[i];
+      }
+      to = pick['email']!;
+    }
+    if (!RegExp(r'^[\w.+-]+@[\w-]+(\.[\w-]+)+$').hasMatch(to)) {
+      throw Exception('"$to" doesn\'t look like a complete email address.');
+    }
+    tr.updateStep('to', status: StepStatus.done, detail: to);
+
+    // 2) Body: exactly what was said, or written by the brain from the topic.
+    tr.updateStep('write', status: StepStatus.running);
+    if (body == null) {
+      if (topic == null) {
+        body = (await _askFreeText(tr, 'What should the email say, $a?')).trim();
+      } else {
+        final d = await tr.control.guard(ai.write(WritingKind.email, 'An email to $to about: $topic', ''));
+        body = d.content;
+        subject ??= d.subject;
+      }
+    }
+    if (body.isEmpty) throw Exception('The email has no text.');
+    body = '${body[0].toUpperCase()}${body.substring(1)}';
+    subject ??= _subjectFrom(body);
+    tr.setParams({'to': to, 'subject': subject, 'body': body});
+    tr.updateStep('write', status: StepStatus.done, detail: 'Subject: $subject');
+
+    // 3) Show it in Gmail so the user can see exactly what will go.
+    final c = await tr.step('compose', () => device.emailCompose(to, subject!, body!));
+    if (c?['ok'] != true) throw Exception('No email app could open (${c?['reason']}).');
+    final app = c?['app'] as String?;
+    await Future<void>.delayed(const Duration(milliseconds: 1200));
+
+    // 4) Approval bound to this exact recipient + subject + text.
+    final content = 'Subject: $subject\n\n$body';
+    tr.updateStep('approval', status: StepStatus.running);
+    final reply = await _askApproval(
+        tr,
+        ApprovalRequest(
+            id: 'email-${tr.snapshot.id}', actionType: 'email.send', title: 'Send email',
+            recipientId: to, recipientLabel: to, content: content, appLabel: 'Gmail'),
+        '$a, I\'ve prepared an email to ${to.replaceAll('@', ' at ')}. Subject: $subject. It says: "$body". Shall I send it?');
+    if (reply.answer != _ApprovalAnswer.approve) {
+      tr.updateStep('approval', status: StepStatus.failed, detail: 'You said no');
+      tr.cancelRemaining();
+      tr.setState(AgentState.cancelled, result: 'Not sent — left as a draft');
+      await _say('Okay, I didn\'t send it, $a. The draft is open in Gmail if you want to change it.', kind: 'approval');
+      return 'Not sent';
+    }
+    approvals.consume('email.send', to, content);
+    tr.setState(AgentState.running);
+    tr.updateStep('approval', status: StepStatus.done, detail: 'Approved');
+
+    // 5) Send — only if the draft on screen matches what was approved.
+    if (!await device.accessibilityEnabled()) {
+      tr.updateStep('send', status: StepStatus.skipped, detail: 'Accessibility off');
+      await _say('The email is ready in Gmail, $a — please tap Send. Turn on LEO device control and I\'ll press it next time.');
+      return 'Ready to send';
+    }
+    tr.updateStep('send', status: StepStatus.running);
+    final r = await device.emailSend(to, body, app: app);
+    switch (r['status']) {
+      case 'sent' || 'sent_unconfirmed':
+        tr.updateStep('send', status: StepStatus.done, detail: r['status'] == 'sent' ? 'Gmail is sending it' : 'Send pressed');
+        await _say(_loopRunning ? 'Email sent to ${to.replaceAll('@', ' at ')}, $a. What next?' : 'Email sent, $a.', kind: 'command');
+        return 'Sent to $to';
+      case 'mismatch':
+        tr.updateStep('send', status: StepStatus.failed, detail: r['reason'] as String?);
+        await _say('I stopped before sending, $a: ${r['reason']}. Please check the draft.');
+        return 'Not sent — draft differs';
+      default:
+        tr.updateStep('send', status: StepStatus.failed, detail: '${r['status']}');
+        await _say('I couldn\'t press Send, $a. The email is ready in Gmail — please tap Send.');
+        return 'Ready to send';
+    }
+  }
+
+  /// "Hi" → "Hi"; a longer body → its first few words.
+  static String _subjectFrom(String body) {
+    final first = body.split(RegExp(r'[\n.!?]')).first.trim();
+    final words = first.split(RegExp(r'\s+'));
+    final s = words.length <= 6 ? first : '${words.take(6).join(' ')}…';
+    return s.isEmpty ? 'Message' : '${s[0].toUpperCase()}${s.substring(1)}';
   }
 
   /// Apps where typing + sending reaches a PERSON. These keep the WhatsApp-style flow (exact message + approval).

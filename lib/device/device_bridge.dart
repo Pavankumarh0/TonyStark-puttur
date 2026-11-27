@@ -158,6 +158,14 @@ class DeviceBridge {
     } catch (_) {}
   }
 
+  /// Opens the email compose screen with recipient/subject/body filled in. {ok, app}
+  Future<Map<String, dynamic>> emailCompose(String to, String subject, String body) =>
+      _act('emailCompose', {'to': to, 'subject': subject, 'body': body});
+
+  /// After approval: verifies the draft on screen matches, then presses Send. {ok, status, reason}
+  Future<Map<String, dynamic>> emailSend(String to, String body, {String? app}) =>
+      _act('emailSend', {'to': to, 'body': body, 'app': app});
+
   /// Is a LEO screen (main app or assistant panel) showing right now?
   Future<bool> uiVisible() async {
     try {

@@ -293,10 +293,65 @@ class LocalIntentEngine {
   }
 
   // ---------------------------------------------------------------- files / web / install / shopping / chat reading
+  /// "pavankumarhox56 at gmail dot com" → "pavankumarhox56@gmail.com" (speech-to-text spells addresses out).
+  static String normalizeEmail(String s) {
+    var t = s.trim().replaceAll(RegExp(r'[.,!?]+$'), '');
+    t = t.replaceAll(RegExp(r'\s+(?:at the rate(?: of)?|at)\s+(?=[a-z0-9-]+(?:\s*(?:dot|\.)\s*[a-z]{2,})+\b)', caseSensitive: false), '@');
+    t = t.replaceAll(RegExp(r'\s*\bdot\b\s*', caseSensitive: false), '.');
+    if (t.contains('@')) {
+      final parts = t.split('@');
+      t = '${parts.first.replaceAll(' ', '')}@${parts.sublist(1).join('@').replaceAll(' ', '')}';
+    }
+    return t.toLowerCase().contains('@') ? t.toLowerCase() : s.trim();
+  }
+
+  static EmailIntent? parseEmail(String text) {
+    final re = RegExp(
+        r"^(?:go\s+(?:and\s+)?)?(?:compose|write|send|draft|create|prepare)\s+(?:a\s+|an\s+)?(?:new\s+)?(?:e-?mail|mail|gmail)\s+(?:to|for)\s+(.+?)"
+        r"(?:\s+(?:with\s+(?:the\s+)?)?subject\s+(.+?))?"
+        r"(?:\s+(?:that\s+|which\s+)?(?:saying|says|that says|with (?:the )?(?:message|text)|message|text)\s+(.+)|\s+(?:about|regarding|for)\s+(.+))?$",
+        caseSensitive: false);
+    final short = RegExp(r"^(?:e-?mail|mail)\s+(.+?)\s+(?:(?:that\s+)?(?:saying|says)\s+(.+)|(?:about|regarding)\s+(.+))$", caseSensitive: false);
+    String? to, subject, body, topic;
+    final m = re.firstMatch(text);
+    if (m != null) {
+      to = m.group(1);
+      subject = m.group(2);
+      body = m.group(3);
+      topic = m.group(4);
+    } else {
+      final s = short.firstMatch(text);
+      if (s == null) return null;
+      to = s.group(1);
+      body = s.group(2);
+      topic = s.group(3);
+    }
+    if (to == null || to.trim().isEmpty) return null;
+    String? clean(String? v) => v == null || v.trim().isEmpty ? null : v.trim();
+    var addr = normalizeEmail(to);
+    // "hr@company.com with my leave request" → address + topic
+    final sep = RegExp(r'\s+(?:with|and|regarding)\s+', caseSensitive: false).firstMatch(to);
+    final head = sep == null ? to : to.substring(0, sep.start);
+    final found = RegExp(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+').firstMatch(normalizeEmail(head));
+    final rest = sep == null ? '' : to.substring(sep.end).trim();
+    if (found != null) {
+      addr = found.group(0)!.toLowerCase();
+    } else if (sep != null) {
+      addr = head.trim(); // a contact name: "HR and send it" → "HR"
+    }
+    if (rest.isNotEmpty && body == null && topic == null && !RegExp(r'^(send|mail|email)( it| that)?$', caseSensitive: false).hasMatch(rest)) {
+      topic = rest;
+    }
+    return EmailIntent(addr, subject: clean(subject), body: clean(body), topic: clean(topic));
+  }
+
   /// AI / chat apps LEO may type a request into ("ask Claude to …").
   static const askableApps = r"claude|chat ?gpt|gemini|perplexity|copilot|meta ai|grok|deepseek|le chat|mistral|poe|pi";
 
   LocalIntent? _round3(String text, String n) {
+    // Email with a recipient: compose → approval → send.
+    final em = parseEmail(text);
+    if (em != null) return em;
     // Explicit screen goal written by the Sarvam understanding layer.
     final goal = RegExp(r"^on the phone:\s*(.+)$", caseSensitive: false).firstMatch(text);
     if (goal != null) return PhoneTaskIntent(goal.group(1)!.trim());

@@ -142,6 +142,10 @@ object DeviceChannel {
             // ---------------- process-scoped microphone
             "wakePopup" -> result.success(WakePopup.show(app))
             "uiVisible" -> result.success(JarvisApplication.visibleScreens > 0)
+            "emailCompose" -> result.success(EmailAutomator.compose(app, call.argument<String>("to") ?: "",
+                call.argument<String>("subject") ?: "", call.argument<String>("body") ?: ""))
+            "emailSend" -> background(result) { EmailAutomator.send(call.argument<String>("to") ?: "",
+                call.argument<String>("body") ?: "", call.argument<String>("app")) }
             "applySecureScreen" -> {
                 val on = call.argument<Boolean>("on")
                 JarvisApplication.activeHost?.let { a -> a.runOnUiThread { JarvisApplication.applySecure(a, on) } }

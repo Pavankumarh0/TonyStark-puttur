@@ -346,6 +346,20 @@ class AskAppIntent extends LocalIntent {
   const AskAppIntent(this.prompt, {this.app});
 }
 
+/// "compose a new email to x@gmail.com saying hi" / "email Rahul about tomorrow's leave".
+/// [body] given → sent word for word (no AI). Only [topic] → the brain writes it. Always needs approval.
+class EmailIntent extends LocalIntent {
+  final String to; // an address, or a contact name to look up
+  final String? subject;
+  final String? body;
+  final String? topic;
+  const EmailIntent(this.to, {this.subject, this.body, this.topic});
+
+  /// No exact text given → the brain writes it.
+  @override
+  bool get requiresAi => body == null;
+}
+
 class ReadChatIntent extends LocalIntent {
   final String who;
   const ReadChatIntent(this.who);

@@ -28,7 +28,6 @@ void main() {
       'find my photos from Goa in gallery',
       'mark all emails as read in Gmail',
       'go to instagram and like the latest post from virat',
-      'send an email to hr@company.com with my leave request',
     ]) {
       test(s, () {
         final i = e.parse(s);
