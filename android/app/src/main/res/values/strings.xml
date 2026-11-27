@@ -1,0 +1,4 @@
+<resources>
+    <string name="accessibility_label">JARVIS device control</string>
+    <string name="accessibility_description">Lets JARVIS operate WhatsApp for you (open a chat, type a message, tap Send) ONLY after you approve the exact recipient and message in the JARVIS app. It only reads WhatsApp, WhatsApp Business and YouTube windows (YouTube: to tap the video you asked to play).</string>
+</resources>

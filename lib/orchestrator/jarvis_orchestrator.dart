@@ -1,0 +1,1521 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+import '../ai/ai_service.dart';
+import '../ai/gemini_client.dart';
+import '../core/approval/approval_gate.dart';
+import '../core/greeting.dart';
+import '../core/intent/local_classifier.dart';
+import '../core/intent/local_intent.dart';
+import '../core/intent/local_intent_engine.dart';
+import '../core/task/task_models.dart';
+import '../core/task/task_runner.dart';
+import '../data/context_builder.dart';
+import '../data/memory_repository.dart';
+import '../data/settings_store.dart';
+import '../device/app_resolver.dart';
+import '../device/device_bridge.dart';
+import '../voice/mic_engine.dart';
+import '../voice/speech_input.dart';
+import '../voice/speech_output.dart';
+
+enum VoicePhase { idle, listening, transcribing }
+
+/// What the UI shows as JARVIS' visible state. Always derived from real component state.
+enum DisplayState { offline, waiting, listening, thinking, speaking, executing, approval, paused }
+
+class ChoicePrompt {
+  final String question;
+  final List<String> options;
+  final List<String> details;
+  const ChoicePrompt(this.question, this.options, {this.details = const []});
+}
+
+class Draft {
+  final WritingKind kind;
+  final String? subject;
+  final String content;
+  final DateTime createdAt = DateTime.now();
+  Draft(this.kind, this.subject, this.content);
+}
+
+enum _ApprovalAnswer { approve, reject, edit }
+
+class _ApprovalReply {
+  final _ApprovalAnswer answer;
+  final String? newText;
+  const _ApprovalReply(this.answer, [this.newText]);
+}
+
+typedef _Runner = Future<String?> Function(TaskTracker t);
+
+/// Central controller: input → local intent engine → (AI fallback only if needed) → structured
+/// task → permission/approval checks → device layer. STOP/PAUSE/CANCEL never touch the AI.
+class JarvisOrchestrator extends ChangeNotifier {
+  final SettingsStore settings;
+  final MemoryRepository memory;
+  final ContextBuilder contextBuilder;
+  final AiService ai;
+  final MicEngine mic;
+  final SpeechInput speechIn;
+  final SpeechOutput speechOut;
+  final DeviceBridge device;
+  final AppResolver apps;
+  final LocalIntentEngine engine = LocalIntentEngine();
+  final GreetingGenerator greeter = GreetingGenerator();
+
+  /// On-device intent model (trained on the phone; learns from this user's commands).
+  final LocalIntentClassifier classifier = LocalIntentClassifier();
+  String _currentUtterance = '';
+
+  /// True while the half-screen assistant panel (digital assistant role) is showing.
+  bool assistMode = false;
+  final ApprovalGate approvals = ApprovalGate();
+
+  JarvisOrchestrator({
+    required this.settings,
+    required this.memory,
+    required this.contextBuilder,
+    required this.ai,
+    required this.mic,
+    required this.speechIn,
+    required this.speechOut,
+    required this.device,
+    required this.apps,
+  });
+
+  // ------------------------------------------------------------------ observable state
+  int sessionId = 0;
+  List<StoredMessage> messages = [];
+  List<StoredMessage> previousSessionTail = [];
+  VoicePhase voice = VoicePhase.idle;
+  TaskSnapshot? task;
+  ChoicePrompt? choice;
+  Draft? draft;
+  String? banner;
+  String? lastHeard;
+  bool listeningEnabled = false;
+  bool serviceRunning = false;
+  bool get speaking => speechOut.speaking;
+
+  TaskTracker? _tracker;
+  Completer<_ApprovalReply>? _approvalWait;
+  Completer<int>? _choiceWait;
+  Completer<String>? _freeTextWait;
+  AgentState? _stateBeforePause;
+  bool _loopRunning = false;
+  bool _stopLoop = false;
+  DateTime? _lastUserAt;
+  StreamSubscription? _eventsSub;
+
+  DisplayState get display {
+    if (speechOut.speaking) return DisplayState.speaking;
+    if (voice == VoicePhase.listening) return DisplayState.listening;
+    if (voice == VoicePhase.transcribing) return DisplayState.thinking;
+    final t = task;
+    if (t != null && !t.state.isTerminal && t.state != AgentState.interrupted) {
+      switch (t.state) {
+        case AgentState.waitingForApproval:
+          return DisplayState.approval;
+        case AgentState.paused:
+          return DisplayState.paused;
+        case AgentState.understanding:
+        case AgentState.planning:
+          return choice != null || _freeTextWait != null ? DisplayState.approval : DisplayState.thinking;
+        case AgentState.running:
+          return t.route == TaskRoute.ai && t.kind != 'whatsapp_send' && t.kind != 'open_app'
+              ? DisplayState.thinking
+              : DisplayState.executing;
+        default:
+          break;
+      }
+    }
+    return listeningEnabled ? DisplayState.waiting : DisplayState.offline;
+  }
+
+  ApprovalRequest? get pendingApproval => approvals.pending;
+  bool get awaitingInput => _freeTextWait != null;
+
+  // ------------------------------------------------------------------ lifecycle
+  Future<void> init() async {
+    await memory.markOrphanedTasksInterrupted();
+    sessionId = await memory.resumeOrStartSession();
+    messages = await memory.messagesOf(sessionId, limit: 200);
+    previousSessionTail = (await memory.previousMessages(sessionId, limit: 6)).reversed.toList();
+    _lastUserAt = await memory.lastInteraction();
+    final unfinished = await memory.unfinishedTasks();
+    if (unfinished.isNotEmpty) task = unfinished.first;
+    classifier.train(learned: await memory.learnedExamples());
+    debugPrint('JARVIS local-model: trained on ${classifier.exampleCount} examples');
+    mic.onWake = _onWake;
+    mic.addListener(notifyListeners);
+    speechOut.addListener(() {
+      mic.captureMuted = speechOut.speaking;
+      notifyListeners();
+    });
+    _eventsSub = device.events.listen(_onNativeEvent, onError: (_) {});
+    serviceRunning = await device.isListenerServiceRunning();
+    if (settings.listeningEnabled) {
+      await enableListening(silent: true);
+    }
+    notifyListeners();
+  }
+
+  void _onNativeEvent(Map<String, dynamic> e) {
+    switch (e['type']) {
+      case 'notificationStop':
+        unawaited(stopEverything(fromNotification: true));
+      case 'notificationDisable':
+        unawaited(disableListening());
+      case 'serviceStopped':
+        serviceRunning = false;
+        notifyListeners();
+      case 'assist':
+        final on = e['on'] == true;
+        if (on == assistMode) return;
+        assistMode = on;
+        notifyListeners();
+        // Like Gemini: the panel opens ready to listen.
+        if (on && voice == VoicePhase.idle && !speechOut.speaking) unawaited(tapMic());
+    }
+  }
+
+  void _setBanner(String? b) {
+    banner = b;
+    notifyListeners();
+  }
+
+  void dismissBanner() => _setBanner(null);
+
+  // ------------------------------------------------------------------ listening control
+  Future<bool> _ensureMicPermission() async {
+    var st = await Permission.microphone.status;
+    if (!st.isGranted) st = await Permission.microphone.request();
+    if (!st.isGranted) {
+      _setBanner(st.isPermanentlyDenied
+          ? 'Microphone permission is blocked. Open Permissions → Microphone to allow it.'
+          : 'Microphone permission was denied, so I can only take typed instructions.');
+      return false;
+    }
+    return true;
+  }
+
+  /// Turns on the always-listening mode: microphone foreground service + offline wake word.
+  Future<void> enableListening({bool silent = false}) async {
+    if (!await _ensureMicPermission()) {
+      settings.listeningEnabled = false;
+      listeningEnabled = false;
+      notifyListeners();
+      return;
+    }
+    if (await Permission.notification.isDenied) await Permission.notification.request();
+    serviceRunning = await device.startListenerService();
+    if (!serviceRunning) {
+      _setBanner('Android refused to start the listening service. Open JARVIS in the foreground and try again.');
+    }
+    try {
+      await mic.start();
+    } catch (e) {
+      _setBanner('Could not open the microphone: $e');
+      await device.stopListenerService();
+      serviceRunning = false;
+      notifyListeners();
+      return;
+    }
+    final err = await mic.enableWakeWord(
+        picovoiceKey: settings.wakeEngine == 'porcupine' ? settings.secret(SecretKey.picovoice) : null,
+        sensitivity: settings.wakeSensitivity);
+    listeningEnabled = true;
+    settings.listeningEnabled = true;
+    if (err != null) _setBanner('Wake word failed to start: $err. You can still tap the mic to talk.');
+    unawaited(device.updateServiceStatus(_serviceText()));
+    notifyListeners();
+  }
+
+  Future<void> disableListening() async {
+    _stopLoop = true;
+    speechIn.cancel();
+    await mic.disableWakeWord();
+    await mic.stop();
+    await device.stopListenerService();
+    serviceRunning = false;
+    listeningEnabled = false;
+    settings.listeningEnabled = false;
+    voice = VoicePhase.idle;
+    notifyListeners();
+  }
+
+  String _serviceText() {
+    final t = task;
+    if (t != null && t.state.isActive) return 'Task: ${t.title} — ${t.state.label}';
+    return mic.wakeStatus == WakeWordStatus.armed ? 'Listening for "Jarvis" (on-device)' : 'Microphone ready — wake word off';
+  }
+
+  // ------------------------------------------------------------------ voice entry points
+  void _onWake() {
+    debugPrint('JARVIS mic-trigger: wake word detected');
+    if (speechOut.speaking) {
+      unawaited(speechOut.stop()); // barge-in: "Jarvis" interrupts speech
+      if (_loopRunning) return; // the running loop listens next
+    }
+    if (voice != VoicePhase.idle) return;
+    final midConversation = _loopRunning || (task?.state.isActive ?? false);
+    unawaited(_startVoiceLoop(greet: !midConversation, ack: midConversation));
+  }
+
+  /// Mic button: start/stop a voice turn manually.
+  Future<void> tapMic() async {
+    debugPrint('JARVIS mic-trigger: mic button / orb tapped');
+    if (voice == VoicePhase.listening) {
+      _stopLoop = true;
+      speechIn.cancel();
+      return;
+    }
+    if (speechOut.speaking) await speechOut.stop();
+    if (!await _ensureMicPermission()) return;
+    unawaited(_startVoiceLoop(greet: false, ack: false));
+  }
+
+  Future<void> _startVoiceLoop({required bool greet, required bool ack}) async {
+    if (_loopRunning) {
+      // A loop is already listening/handling: the next capture picks the user up.
+      return;
+    }
+    _loopRunning = true;
+    _stopLoop = false;
+    try {
+      if (greet) {
+        final since = _lastUserAt == null ? null : DateTime.now().difference(_lastUserAt!);
+        final g = (since != null && since < const Duration(minutes: 10))
+            ? greeter.shortAck(address: settings.address)
+            : greeter.greet(
+                now: DateTime.now(),
+                address: settings.address,
+                sinceLastInteraction: since,
+                pendingTasks: (await memory.unfinishedTasks()).length);
+        await _say(g, store: true, kind: 'greeting');
+      } else if (ack) {
+        await _say(greeter.shortAck(address: settings.address), store: false);
+      }
+      var followUps = 0;
+      var idleWhileWaiting = 0;
+      while (!_stopLoop) {
+        await _untilNotSpeaking();
+        if (_stopLoop) break;
+        final waitingOnUser = approvals.pending != null || choice != null || _freeTextWait != null;
+        final taskBusy = task?.state == AgentState.running;
+        final String? heard;
+        try {
+          heard = await _listen(timeout: Duration(seconds: waitingOnUser || taskBusy ? 8 : 6));
+        } on SpeechInputException catch (e) {
+          await _say(e.message, store: false);
+          break;
+        } catch (e) {
+          _setBanner('Speech recognition failed: $e');
+          break;
+        }
+        if (_stopLoop) break;
+        if (heard == null) {
+          if (waitingOnUser && idleWhileWaiting++ < 3) continue; // keep waiting for an answer for ~30 s
+          if (taskBusy) continue; // keep listening for STOP while a task runs
+          break;
+        }
+        idleWhileWaiting = 0;
+        await handleInput(heard, source: 'voice');
+        final stillWaiting = approvals.pending != null || choice != null || _freeTextWait != null;
+        final stillBusy = task?.state == AgentState.running;
+        if (stillWaiting || stillBusy) continue;
+        if (!settings.followUpListening || followUps++ >= 1) break;
+      }
+    } finally {
+      _loopRunning = false;
+      voice = VoicePhase.idle;
+      notifyListeners();
+    }
+  }
+
+  Future<String?> _listen({required Duration timeout}) async {
+    voice = VoicePhase.listening;
+    notifyListeners();
+    try {
+      final text = await speechIn.listenOnce(
+        noSpeechTimeout: timeout,
+        onSpeechCaptured: () {
+          voice = VoicePhase.transcribing;
+          notifyListeners();
+        },
+      );
+      lastHeard = text;
+      return text;
+    } finally {
+      voice = VoicePhase.idle;
+      notifyListeners();
+      if (!listeningEnabled && !_loopRunning) unawaited(mic.stop());
+    }
+  }
+
+  Future<void> _untilNotSpeaking() async {
+    while (speechOut.speaking) {
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+    }
+  }
+
+  // ------------------------------------------------------------------ main input handler
+  Future<void> submitText(String text) async {
+    final t = text.trim();
+    if (t.isEmpty) return;
+    if (speechOut.speaking) await speechOut.stop();
+    await handleInput(t, source: 'text');
+  }
+
+  IntentContext get _ctx => IntentContext(
+        awaitingApproval: approvals.pending != null,
+        choiceCount: choice?.options.length ?? 0,
+        hasActiveTask: task?.state.isActive ?? false,
+        hasPausedTask: task?.state == AgentState.paused,
+        hasInterruptedTask: task?.state == AgentState.interrupted,
+      );
+
+  Future<void> handleInput(String raw, {required String source}) async {
+    _lastUserAt = DateTime.now();
+    _currentUtterance = LocalIntentEngine.clean(raw);
+    var intent = engine.parse(raw, ctx: _ctx);
+    // Rules didn't match → try the on-device trained model before ever considering AI.
+    if (intent is UnknownIntent && _freeTextWait == null && _choiceWait == null && _approvalWait == null) {
+      final guess = classifier.classify(_currentUtterance);
+      if (guess != null) {
+        debugPrint('JARVIS local-model: "${_currentUtterance}" → ${guess.runtimeType}');
+        intent = guess;
+      }
+    }
+    final kind = _kindOf(intent);
+    await _store('user', raw, source: source, kind: kind, route: intent.requiresAi ? 'ai' : 'local');
+
+    // 1) Interrupt controller — always local, always first.
+    switch (intent) {
+      case StopIntent():
+        return stop();
+      case StopEverythingIntent():
+        return stopEverything();
+      case PauseIntent():
+        return pause();
+      case ResumeIntent():
+        return resume();
+      case CancelTaskIntent():
+        return cancelTask();
+      case StatusIntent():
+        return _say(_statusText(), kind: 'status');
+      case ContinueWhereStoppedIntent():
+        return continueWhereStopped();
+      case StopListeningIntent():
+        _stopLoop = true;
+        return _say('Very well, ${settings.address}. Say "Jarvis" whenever you need me.');
+      default:
+        break;
+    }
+
+    // 2) Answers to an open question (approval / choice / free text).
+    if (_approvalWait != null) {
+      switch (intent) {
+        case ApproveIntent():
+          return approve();
+        case RejectIntent():
+          return reject();
+        case EditMessageIntent(:final newText):
+          return editPending(newText);
+        default:
+          await _say('I\'m waiting for your approval, ${settings.address}. Say "send it", "no", or "change it to …".');
+          return;
+      }
+    }
+    if (_choiceWait != null) {
+      if (intent is ChooseOptionIntent) return choose(intent.index);
+      final c = choice!;
+      final byName = _matchOption(raw, c.options);
+      if (byName != null) return choose(byName);
+      if (c.options.length == 2 && intent is ApproveIntent) return choose(0);
+      if (c.options.length == 2 && intent is RejectIntent) return choose(1);
+      await _say('Please pick one of the options, ${settings.address} — for example, "the first one".');
+      return;
+    }
+    if (_freeTextWait != null) {
+      final w = _freeTextWait!;
+      _freeTextWait = null;
+      w.complete(LocalIntentEngine.clean(raw));
+      notifyListeners();
+      return;
+    }
+
+    if (task?.state.isActive ?? false) {
+      if (task!.state == AgentState.running || task!.state == AgentState.planning) {
+        await _say('I\'m still working on "${task!.title}", ${settings.address}. Say "stop" to interrupt it first.');
+        return;
+      }
+    }
+
+    // 3) Everything else becomes a task.
+    switch (intent) {
+      case OpenAppIntent(:final appName):
+        _startTask('Open $appName', 'open_app', TaskRoute.local, {'query': appName});
+      case PlayMediaIntent(:final query, :final app):
+        _startTask('Play "$query"', 'play_media', TaskRoute.local, {'query': query, 'app': app.name});
+      case CallIntent(:final name):
+        _startTask('Call $name', 'call', TaskRoute.local, {'name': name});
+      case CheckMessagesIntent(:final whatsapp, :final email):
+        _startTask(
+            'Check new ${[if (whatsapp) 'WhatsApp messages', if (email) 'emails'].join(' and ')}',
+            'check_messages', TaskRoute.local, {'whatsapp': whatsapp, 'email': email});
+      case SendMessageIntent():
+        _startTask(
+          'Send ${intent.app.displayName} message to ${intent.recipient}',
+          'whatsapp_send',
+          intent.requiresAi ? TaskRoute.ai : TaskRoute.local,
+          {
+            'app': intent.app.name,
+            'recipient': intent.recipient,
+            'isGroup': intent.isGroup,
+            'message': intent.message,
+            'composeTopic': intent.composeTopic,
+          },
+        );
+      case ForgetEverythingIntent():
+        _startTask('Delete conversation history', 'forget_all', TaskRoute.local, {});
+      case KnowledgeIntent(:final question):
+        _startTask(_titleFrom(question), 'knowledge', TaskRoute.ai, {'text': question});
+      case WriteIntent(:final kind, :final request):
+        _startTask(_titleFrom(request), 'write', TaskRoute.ai, {'text': request, 'writeKind': kind.name});
+      case UnknownIntent(:final text):
+        _startTask(_titleFrom(text), 'ai_route', TaskRoute.ai, {'text': text});
+      default:
+        await _localReply(intent);
+    }
+  }
+
+  String _kindOf(LocalIntent i) => switch (i) {
+        StopIntent() || StopEverythingIntent() || PauseIntent() || ResumeIntent() || CancelTaskIntent() ||
+        StatusIntent() || ContinueWhereStoppedIntent() || StopListeningIntent() => 'control',
+        ApproveIntent() || RejectIntent() || EditMessageIntent() || ChooseOptionIntent() => 'answer',
+        OpenAppIntent() || SendMessageIntent() => 'command',
+        KnowledgeIntent() => 'knowledge',
+        WriteIntent() => 'write',
+        RememberIntent() => 'remember',
+        ContextStatementIntent() => 'statement',
+        UnknownIntent() => 'conversation',
+        _ => 'smalltalk',
+      };
+
+  static String _titleFrom(String s) {
+    final t = LocalIntentEngine.clean(s);
+    return t.length > 48 ? '${t.substring(0, 48)}…' : t;
+  }
+
+  int? _matchOption(String raw, List<String> options) {
+    final n = LocalIntentEngine.norm(raw);
+    for (var i = 0; i < options.length; i++) {
+      if (LocalIntentEngine.norm(options[i]) == n) return i;
+    }
+    final hits = [
+      for (var i = 0; i < options.length; i++)
+        if (n.length >= 3 && LocalIntentEngine.norm(options[i]).contains(n)) i
+    ];
+    return hits.length == 1 ? hits.first : null;
+  }
+
+  // ------------------------------------------------------------------ local replies (no AI)
+  Future<void> _localReply(LocalIntent intent) async {
+    final a = settings.address;
+    final now = DateTime.now();
+    switch (intent) {
+      case TellTimeIntent():
+        final h = now.hour % 12 == 0 ? 12 : now.hour % 12;
+        await _say('It\'s $h:${now.minute.toString().padLeft(2, '0')} ${now.hour < 12 ? 'AM' : 'PM'}, $a.', kind: 'info');
+      case TellDateIntent():
+        await _say('Today is ${_weekday(now)}, ${now.day} ${_month(now)} ${now.year}.', kind: 'info');
+      case GreetingIntent():
+        await _say(greeter.greet(now: now, address: a, sinceLastInteraction: const Duration(hours: 4)), kind: 'greeting');
+      case HowAreYouIntent():
+        await _say('All systems operational, $a. Thank you for asking. What can I do for you?');
+      case ThanksIntent():
+        await _say('Always a pleasure, $a.');
+      case RememberIntent(:final fact):
+        await memory.addFact(fact);
+        await _say('Noted, $a. I\'ll remember that: $fact. You can review or delete it under Memory.', kind: 'remember');
+      case ContextStatementIntent():
+        await _say('Understood, $a. I\'ve noted that in our conversation history.', kind: 'statement');
+      case RecallIntent(:final topic):
+        await _recall(topic);
+      case ContinuePreviousWorkIntent():
+        await _continuePreviousWork();
+      case ApproveIntent() || RejectIntent() || EditMessageIntent():
+        await _say('There\'s nothing waiting for approval right now, $a.');
+      case ChooseOptionIntent():
+        await _say('There\'s no open question right now, $a.');
+      default:
+        await _say('I\'m not sure how to help with that yet, $a.');
+    }
+  }
+
+  Future<void> _recall(String? topic) async {
+    final a = settings.address;
+    if (topic != null && topic.trim().isNotEmpty) {
+      final hits = (await memory.search(topic, limit: 10)).where((m) => m.isUser).take(3).toList();
+      final facts = (await memory.facts()).where((f) => f.text.toLowerCase().contains(topic.toLowerCase())).toList();
+      if (hits.isEmpty && facts.isEmpty) {
+        await _say('I have nothing stored about "$topic", $a.', kind: 'recall');
+        return;
+      }
+      final parts = [
+        for (final f in facts.take(2)) 'you asked me to remember: ${f.text}',
+        for (final m in hits) 'on ${_shortDate(m.createdAt)} you said: "${m.text}"',
+      ];
+      await _say('Here\'s what I have about $topic, $a: ${parts.join('; ')}.', kind: 'recall');
+      return;
+    }
+    final facts = await memory.facts();
+    final prev = await memory.previousMessages(sessionId,
+        limit: 4, role: 'user', kinds: ['statement', 'knowledge', 'write', 'conversation', 'remember', 'command']);
+    if (facts.isEmpty && prev.isEmpty) {
+      await _say('I don\'t have any earlier conversations stored yet, $a.', kind: 'recall');
+      return;
+    }
+    final parts = [
+      if (facts.isNotEmpty) 'You asked me to remember ${facts.take(3).map((f) => f.text).join('; ')}',
+      if (prev.isNotEmpty)
+        'Recently you said: ${prev.take(3).map((m) => '"${m.text}" (${_shortDate(m.createdAt)})').join(', ')}',
+    ];
+    await _say('${parts.join('. ')}.', kind: 'recall');
+  }
+
+  Future<void> _continuePreviousWork() async {
+    final a = settings.address;
+    final unfinished = (await memory.unfinishedTasks()).where((t) => t.state == AgentState.interrupted).toList();
+    if (unfinished.isNotEmpty) {
+      final t = unfinished.first;
+      final done = t.completedSteps.map((s) => s.description).join(', ');
+      await _say('Your last unfinished task was "${t.title}", stopped on ${_shortDate(t.updatedAt)}.'
+          '${done.isEmpty ? '' : ' Already done: $done.'} Shall I resume it?');
+      final pick = await _askChoice('Resume "${t.title}"?', ['Resume it', 'Leave it']);
+      if (pick == 0) {
+        task = t;
+        await continueWhereStopped();
+      } else {
+        await _say('Understood, I\'ll leave it.');
+      }
+      return;
+    }
+    final prev = await memory.previousMessages(sessionId,
+        limit: 3, role: 'user', kinds: ['statement', 'knowledge', 'write', 'conversation', 'remember']);
+    if (prev.isEmpty) {
+      await _say('I don\'t have an earlier discussion stored to continue from, $a. What are we working on?');
+      return;
+    }
+    final last = prev.first;
+    await _say('Last time, on ${_shortDate(last.createdAt)}, you told me: "${last.text}". '
+        '${prev.length > 1 ? 'Before that: "${prev[1].text}". ' : ''}Where would you like to pick up, $a?',
+        kind: 'recall');
+  }
+
+  // ------------------------------------------------------------------ interrupt controller
+  String _statusText() {
+    final a = settings.address;
+    final t = task;
+    if (t == null) {
+      return 'I\'m not running any task, $a. ${listeningEnabled && mic.wakeStatus == WakeWordStatus.armed ? 'The wake word is armed.' : ''}';
+    }
+    final done = t.completedSteps.map((s) => s.description).toList();
+    final cur = t.currentStep?.description;
+    return switch (t.state) {
+      AgentState.running || AgentState.planning || AgentState.understanding =>
+        'I\'m working on "${t.title}". ${cur != null ? 'Current step: $cur. ' : ''}${done.isEmpty ? '' : 'Done so far: ${done.join(', ')}.'}',
+      AgentState.waitingForApproval => 'I\'m waiting for your approval on "${t.title}".',
+      AgentState.paused => '"${t.title}" is paused. ${done.isEmpty ? '' : 'Done so far: ${done.join(', ')}. '}Say resume to continue.',
+      AgentState.interrupted =>
+        '"${t.title}" was interrupted. ${done.isEmpty ? 'Nothing was completed.' : 'Completed: ${done.join(', ')}.'} Say "continue where you stopped" to resume.',
+      _ => 'Nothing is running. The last task, "${t.title}", ${t.state.name}.',
+    };
+  }
+
+  String _completionReport(TaskSnapshot t) {
+    final done = t.completedSteps.map((s) => s.description).toList();
+    final notDone = t.steps
+        .where((s) => s.status == StepStatus.cancelled || s.status == StepStatus.pending)
+        .map((s) => s.description)
+        .toList();
+    final irreversible = t.completedSteps.where((s) => s.irreversible).toList();
+    final b = StringBuffer();
+    b.write(done.isEmpty ? 'Nothing had been completed yet.' : 'Completed: ${done.join(', ')}.');
+    if (notDone.isNotEmpty) b.write(' Not done: ${notDone.join(', ')}.');
+    if (irreversible.isNotEmpty) {
+      b.write(' Note: "${irreversible.map((s) => s.description).join(', ')}" had already happened and cannot be undone.');
+    }
+    return b.toString();
+  }
+
+  void _abortWaits() {
+    _approvalWait = null;
+    _choiceWait = null;
+    _freeTextWait = null;
+    choice = null;
+    approvals.invalidate();
+  }
+
+  Future<void> _haltInFlight() async {
+    await speechOut.stop();
+    ai.cancel();
+    unawaited(device.whatsappCancel());
+  }
+
+  /// STOP: halt the current task, keep its state so it can be resumed, report what happened.
+  Future<void> stop() async {
+    await _haltInFlight();
+    final tr = _tracker;
+    if (tr == null || !tr.snapshot.state.isActive) {
+      await _say('Stopped, ${settings.address}.', kind: 'control');
+      return;
+    }
+    tr.control.abort(AgentState.interrupted);
+    _abortWaits();
+    tr.cancelRemaining();
+    tr.setState(AgentState.interrupted);
+    _tracker = null;
+    notifyListeners();
+    await _say('Stopped, ${settings.address}. ${_completionReport(tr.snapshot)} Say "continue where you stopped" to resume.',
+        kind: 'control');
+  }
+
+  Future<void> stopEverything({bool fromNotification = false}) async {
+    _stopLoop = true;
+    speechIn.cancel();
+    await _haltInFlight();
+    final tr = _tracker;
+    if (tr != null && tr.snapshot.state.isActive) {
+      tr.control.abort(AgentState.interrupted);
+      _abortWaits();
+      tr.cancelRemaining();
+      tr.setState(AgentState.interrupted);
+      _tracker = null;
+      await _say('All activity halted, ${settings.address}. ${_completionReport(tr.snapshot)}', kind: 'control');
+    } else {
+      _abortWaits();
+      await _say('All activity halted, ${settings.address}.', kind: 'control');
+    }
+    notifyListeners();
+  }
+
+  Future<void> pause() async {
+    final tr = _tracker;
+    if (tr == null || !(tr.snapshot.state == AgentState.running || tr.snapshot.state == AgentState.waitingForApproval)) {
+      await speechOut.stop();
+      await _say('There\'s no running task to pause, ${settings.address}.');
+      return;
+    }
+    await speechOut.stop();
+    _stateBeforePause = tr.snapshot.state;
+    tr.control.pause();
+    tr.setState(AgentState.paused);
+    await _say('Paused, ${settings.address}. ${tr.snapshot.completedSteps.isEmpty ? '' : 'Done so far: ${tr.snapshot.completedSteps.map((s) => s.description).join(', ')}. '}Say "resume" when ready.',
+        kind: 'control');
+  }
+
+  Future<void> resume() async {
+    final tr = _tracker;
+    if (tr != null && tr.snapshot.state == AgentState.paused) {
+      tr.setState(_stateBeforePause ?? AgentState.running);
+      tr.control.resume();
+      await _say('Resuming, ${settings.address}.', kind: 'control');
+      return;
+    }
+    if (task?.state == AgentState.interrupted) return continueWhereStopped();
+    await _say('Nothing is paused, ${settings.address}.');
+  }
+
+  Future<void> cancelTask() async {
+    await _haltInFlight();
+    final tr = _tracker;
+    if (tr == null || !tr.snapshot.state.isActive) {
+      final t = task;
+      if (t != null && t.state == AgentState.interrupted) {
+        final c = t.copyWith(state: AgentState.cancelled, result: 'Cancelled by user');
+        task = c;
+        await memory.updateTask(c);
+        notifyListeners();
+        await _say('Cancelled "${t.title}", ${settings.address}.', kind: 'control');
+        return;
+      }
+      await _say('There\'s no task to cancel, ${settings.address}.');
+      return;
+    }
+    tr.control.abort(AgentState.cancelled);
+    _abortWaits();
+    tr.cancelRemaining();
+    tr.setState(AgentState.cancelled, result: 'Cancelled by user');
+    _tracker = null;
+    notifyListeners();
+    await _say('Task cancelled, ${settings.address}. ${_completionReport(tr.snapshot)}', kind: 'control');
+  }
+
+  Future<void> continueWhereStopped() async {
+    final t = task;
+    if (t == null || t.state != AgentState.interrupted) {
+      final unfinished = (await memory.unfinishedTasks()).where((x) => x.state == AgentState.interrupted).toList();
+      if (unfinished.isEmpty) {
+        await _say('There\'s no interrupted task to continue, ${settings.address}.');
+        return;
+      }
+      task = unfinished.first;
+    }
+    final snap = task!;
+    final runner = _runners[snap.kind];
+    if (runner == null) {
+      await _say('I can\'t resume that kind of task, ${settings.address}.');
+      return;
+    }
+    final tr = TaskTracker(snap, _onTaskChange);
+    tr.reopenCancelled();
+    _tracker = tr;
+    tr.setState(AgentState.running);
+    await _say('Continuing "${snap.title}" where I stopped, ${settings.address}.', kind: 'control');
+    unawaited(_execute(tr, runner));
+  }
+
+  // ------------------------------------------------------------------ approvals & questions
+  Future<void> approve() async {
+    final w = _approvalWait;
+    if (w == null) {
+      await _say('There\'s nothing waiting for approval, ${settings.address}.');
+      return;
+    }
+    approvals.approve();
+    _approvalWait = null;
+    w.complete(const _ApprovalReply(_ApprovalAnswer.approve));
+    notifyListeners();
+  }
+
+  Future<void> reject() async {
+    final w = _approvalWait;
+    if (w == null) return;
+    approvals.reject();
+    _approvalWait = null;
+    w.complete(const _ApprovalReply(_ApprovalAnswer.reject));
+    notifyListeners();
+  }
+
+  Future<void> editPending(String newText) async {
+    final w = _approvalWait;
+    if (w == null) return;
+    approvals.invalidate(); // content changed → old approval is void
+    _approvalWait = null;
+    w.complete(_ApprovalReply(_ApprovalAnswer.edit, newText.trim()));
+    notifyListeners();
+  }
+
+  Future<void> choose(int index) async {
+    final w = _choiceWait;
+    if (w == null) return;
+    _choiceWait = null;
+    choice = null;
+    w.complete(index);
+    notifyListeners();
+  }
+
+  Future<_ApprovalReply> _askApproval(TaskTracker tr, ApprovalRequest req, String prompt) async {
+    approvals.request(req);
+    final w = Completer<_ApprovalReply>();
+    _approvalWait = w;
+    tr.setState(AgentState.waitingForApproval);
+    unawaited(device.updateServiceStatus('Waiting for your approval'));
+    await _say(prompt, kind: 'approval');
+    return tr.control.guard(w.future);
+  }
+
+  Future<int> _askChoice(String question, List<String> options, {List<String> details = const [], TaskTracker? tr}) async {
+    choice = ChoicePrompt(question, options, details: details);
+    final w = Completer<int>();
+    _choiceWait = w;
+    notifyListeners();
+    final spoken = options.length <= 4
+        ? '$question ${[for (var i = 0; i < options.length; i++) '${_ordinal(i)}: ${options[i]}'].join('. ')}.'
+        : question;
+    await _say(spoken, kind: 'question');
+    return tr == null ? w.future : tr.control.guard(w.future);
+  }
+
+  Future<String> _askFreeText(TaskTracker tr, String question) async {
+    final w = Completer<String>();
+    _freeTextWait = w;
+    notifyListeners();
+    await _say(question, kind: 'question');
+    return tr.control.guard(w.future);
+  }
+
+  // ------------------------------------------------------------------ task engine
+  late final Map<String, _Runner> _runners = {
+    'open_app': _runOpenApp,
+    'whatsapp_send': _runWhatsApp,
+    'forget_all': _runForgetAll,
+    'knowledge': _runKnowledge,
+    'write': _runWrite,
+    'ai_route': _runAiRoute,
+    'play_media': _runPlayMedia,
+    'call': _runCall,
+    'check_messages': _runCheckMessages,
+  };
+
+  static const _kindToLabel = {
+    'open_app': 'open_app',
+    'play_media': 'play_media',
+    'call': 'call',
+    'check_messages': 'check_messages',
+    'whatsapp_send': 'send_message',
+  };
+
+  /// Learns from a successfully executed command so the on-device model handles similar
+  /// phrasing locally next time — including requests that originally needed the AI.
+  void _learn(TaskSnapshot t) {
+    final label = _kindToLabel[t.kind];
+    final text = t.params['utterance'] as String?;
+    if (label == null || text == null || text.isEmpty) return;
+    classifier.add(text, label);
+    unawaited(memory.addLearnedExample(text, label, source: t.route == TaskRoute.ai ? 'ai' : 'local'));
+  }
+
+  void _onTaskChange(TaskSnapshot s) {
+    task = s;
+    notifyListeners();
+    if (s.id > 0) unawaited(memory.updateTask(s));
+    if (listeningEnabled) unawaited(device.updateServiceStatus(_serviceText()));
+  }
+
+  void _startTask(String title, String kind, TaskRoute route, Map<String, dynamic> params) {
+    final now = DateTime.now();
+    params = {'utterance': _currentUtterance, ...params};
+    unawaited(() async {
+      var snap = TaskSnapshot(
+        id: 0,
+        title: title,
+        kind: kind,
+        state: AgentState.understanding,
+        steps: const [],
+        route: route,
+        createdAt: now,
+        updatedAt: now,
+        params: params,
+      );
+      final id = await memory.insertTask(snap, sessionId);
+      snap = TaskSnapshot(
+        id: id, title: title, kind: kind, state: AgentState.understanding, steps: const [], route: route,
+        createdAt: now, updatedAt: now, params: params,
+      );
+      final tr = TaskTracker(snap, _onTaskChange);
+      _tracker = tr;
+      task = snap;
+      draft = kind == 'write' ? null : draft;
+      notifyListeners();
+      tr.setState(AgentState.planning);
+      tr.setState(AgentState.running);
+      await _execute(tr, _runners[kind]!);
+    }());
+  }
+
+  Future<void> _execute(TaskTracker tr, _Runner runner) async {
+    try {
+      final result = await runner(tr);
+      if (tr.control.isAborted) return;
+      if (tr.snapshot.state == AgentState.cancelled) return;
+      tr.setState(AgentState.completed, result: result);
+      if (identical(_tracker, tr)) _tracker = null;
+      _learn(tr.snapshot);
+    } on TaskAbort {
+      // stop()/cancelTask() already moved the task to its state and reported.
+    } catch (e) {
+      if (tr.control.isAborted) return;
+      final msg = _friendlyError(e);
+      if (TaskStateMachine.canTransition(tr.snapshot.state, AgentState.failed)) {
+        tr.cancelRemaining();
+        tr.setState(AgentState.failed, result: msg);
+      }
+      if (identical(_tracker, tr)) _tracker = null;
+      _abortWaits();
+      await _say(msg, kind: 'error');
+    } finally {
+      notifyListeners();
+      if (listeningEnabled) unawaited(device.updateServiceStatus(_serviceText()));
+    }
+  }
+
+  String _friendlyError(Object e) {
+    final a = settings.address;
+    if (e is AiNotConfigured) return 'I need a Gemini API key for that, $a. Please add it in Settings.';
+    if (e is GeminiException && (e.status == 429 || e.message.toLowerCase().contains('quota'))) {
+      return 'My Gemini quota is used up for now, $a. Everyday tasks — apps, calls, music, messages — still work '
+          'locally; writing and questions will work again once the quota resets.';
+    }
+    final s = e.toString().replaceFirst('Exception: ', '');
+    return 'I couldn\'t complete that, $a. $s';
+  }
+
+  // ---- runner: play media (local — no AI)
+  Future<String?> _runPlayMedia(TaskTracker tr) async {
+    final q = tr.snapshot.params['query'] as String;
+    final app = MediaApp.values.byName(tr.snapshot.params['app'] as String);
+    final appLabel = switch (app) {
+      MediaApp.youtube => 'YouTube',
+      MediaApp.youtubeMusic => 'YouTube Music',
+      MediaApp.spotify => 'Spotify',
+    };
+    final appKey = switch (app) {
+      MediaApp.youtube => 'youtube',
+      MediaApp.youtubeMusic => 'youtube_music',
+      MediaApp.spotify => 'spotify',
+    };
+    if (tr.stepStatus('search') == null) {
+      tr.addStep(TaskStep(id: 'search', description: 'Search $appLabel for "$q"'));
+      tr.addStep(const TaskStep(id: 'play', description: 'Start playback'));
+    }
+    await _say('Playing $q on $appLabel, ${settings.address}.', kind: 'command');
+    tr.updateStep('search', status: StepStatus.running);
+    final r = await tr.control.guard(device.playMedia(appKey, q));
+    final status = r['status'] as String?;
+    if (status == 'failed') {
+      tr.updateStep('search', status: StepStatus.failed, detail: r['reason'] as String?);
+      throw Exception(r['reason'] ?? 'Could not open $appLabel');
+    }
+    tr.updateStep('search', status: StepStatus.done);
+    if (status == 'playing') {
+      final title = r['title'] as String?;
+      tr.updateStep('play', status: StepStatus.done, detail: title == null ? 'Playback started' : 'Playing: $title');
+      return title == null ? 'Playing' : 'Playing $title';
+    }
+    tr.updateStep('play', status: StepStatus.skipped, detail: r['reason'] as String?);
+    await _say('I\'ve opened the $appLabel results for $q, but couldn\'t start it automatically. '
+        '${(r['reason'] as String? ?? '').contains('Accessibility') ? 'Turn on the JARVIS accessibility service and I\'ll press play myself next time.' : 'Please tap the first result.'}',
+        kind: 'command');
+    return 'Results opened (not auto-played)';
+  }
+
+  // ---- runner: phone call (local — no AI). Ambiguous contacts / numbers are asked, never guessed.
+  Future<String?> _runCall(TaskTracker tr) async {
+    final name = tr.snapshot.params['name'] as String;
+    if (tr.stepStatus('contact') == null) {
+      tr.addStep(TaskStep(id: 'contact', description: 'Find "$name" in contacts'));
+      tr.addStep(const TaskStep(id: 'number', description: 'Choose number'));
+      tr.addStep(const TaskStep(id: 'call', description: 'Place the call', irreversible: true));
+    }
+    String? number = tr.snapshot.params['number'] as String?;
+    String label = (tr.snapshot.params['label'] as String?) ?? name;
+    final digits = name.replaceAll(RegExp(r'[^0-9+]'), '');
+    if (number == null && digits.length >= 6 && digits.length >= name.replaceAll(' ', '').length - 1) {
+      number = digits; // the user said a number
+      tr.updateStep('contact', status: StepStatus.skipped, detail: 'Number given directly');
+      tr.updateStep('number', status: StepStatus.done, detail: number);
+    }
+    if (number == null) {
+      tr.updateStep('contact', status: StepStatus.running);
+      var st = await Permission.contacts.status;
+      if (!st.isGranted) st = await Permission.contacts.request();
+      if (!st.isGranted) throw Exception('I need Contacts permission to find $name.');
+      final all = await tr.control.guard(device.searchContacts(name));
+      final exact = all.where((c) => c.name.toLowerCase() == name.toLowerCase()).toList();
+      final firstName = all.where((c) => c.name.toLowerCase().split(' ').first == name.toLowerCase()).toList();
+      final pool = exact.isNotEmpty ? exact : (firstName.isNotEmpty ? firstName : all);
+      if (pool.isEmpty) {
+        tr.updateStep('contact', status: StepStatus.failed, detail: 'No match');
+        throw Exception('I couldn\'t find $name in your contacts.');
+      }
+      var c = pool.first;
+      if (pool.length > 1) {
+        final i = await _askChoice('I found ${pool.length} contacts matching "$name". Who should I call?',
+            pool.map((c) => c.name).take(5).toList(), details: pool.map((c) => c.numbers.join(', ')).take(5).toList(), tr: tr);
+        c = pool[i];
+      }
+      tr.updateStep('contact', status: StepStatus.done, detail: c.name);
+      tr.updateStep('number', status: StepStatus.running);
+      number = c.primaryNumber;
+      if (c.numbers.length > 1) {
+        final i = await _askChoice('${c.name} has ${c.numbers.length} numbers. Which one should I call?', c.numbers, tr: tr);
+        number = c.numbers[i];
+      }
+      label = c.name;
+      tr.updateStep('number', status: StepStatus.done, detail: number);
+      tr.setParams({'number': number, 'label': label});
+      speechIn.keyterms.add(c.name);
+    }
+    await tr.control.checkpoint();
+    var ph = await Permission.phone.status;
+    if (!ph.isGranted) ph = await Permission.phone.request();
+    tr.updateStep('call', status: StepStatus.running);
+    await _say('Calling $label, ${settings.address}.', kind: 'command');
+    await tr.control.checkpoint(); // last chance for STOP before dialling
+    final r = await device.placeCall(number);
+    if (r == 'calling') {
+      tr.updateStep('call', status: StepStatus.done, detail: 'Calling $number');
+      return 'Calling $label';
+    }
+    if (r == 'dialer_opened') {
+      tr.updateStep('call', status: StepStatus.skipped, detail: 'Phone permission denied — dialer opened');
+      await _say('I opened the dialer with $label\'s number. Please tap call — I don\'t have phone permission.');
+      return 'Dialer opened';
+    }
+    throw Exception('The call could not be placed (${r.replaceFirst('failed:', '')}).');
+  }
+
+  // ---- runner: check new messages / emails from notifications (local — no AI)
+  Future<String?> _runCheckMessages(TaskTracker tr) async {
+    final wa = tr.snapshot.params['whatsapp'] == true;
+    final mail = tr.snapshot.params['email'] == true;
+    if (tr.stepStatus('read') == null) {
+      tr.addStep(const TaskStep(id: 'access', description: 'Check notification access'));
+      tr.addStep(TaskStep(id: 'read', description: 'Read new ${[if (wa) 'WhatsApp', if (mail) 'email'].join(' & ')} notifications'));
+    }
+    final ok = await tr.step('access', () => device.notificationAccess());
+    if (ok != true) {
+      tr.updateStep('access', status: StepStatus.failed, detail: 'Notification access is off');
+      unawaited(device.openNotificationAccessSettings());
+      throw Exception('I need notification access to read your new messages. I\'ve opened the setting — turn on "JARVIS message reader".');
+    }
+    final items = await tr.step('read', () => device.readNotifications(whatsapp: wa, email: mail)) ?? const [];
+    final chats = items.where((i) => i.isWhatsApp).toList();
+    final emails = items.where((i) => !i.isWhatsApp).toList();
+    final a = settings.address;
+    final parts = <String>[];
+    if (wa) {
+      if (chats.isEmpty) {
+        parts.add('No new WhatsApp messages.');
+      } else {
+        final total = chats.fold<int>(0, (s, c) => s + (c.count == 0 ? 1 : c.count));
+        final top = chats.take(4).map((c) {
+          final last = c.lines.isEmpty ? '' : ': "${c.lines.last}"';
+          return '${c.title}${c.count > 1 ? ' (${c.count})' : ''}$last';
+        }).join('; ');
+        parts.add('$total new WhatsApp message${total == 1 ? '' : 's'} from ${chats.length} chat${chats.length == 1 ? '' : 's'}. $top.');
+      }
+    }
+    if (mail) {
+      if (emails.isEmpty) {
+        parts.add('No new emails.');
+      } else {
+        final top = emails.take(4).map((e) => '${e.title}${e.lines.isEmpty ? '' : ' — ${e.lines.first}'}').join('; ');
+        parts.add('${emails.length} new email${emails.length == 1 ? '' : 's'}: $top.');
+      }
+    }
+    tr.updateStep('read', detail: '${chats.length} chats, ${emails.length} emails');
+    await _say('${parts.join(' ')}${items.isEmpty ? '' : ' That\'s what\'s in your notifications, $a.'}', kind: 'command');
+    return '${chats.length} chats, ${emails.length} emails';
+  }
+
+  // ---- runner: open app (local)
+  Future<String?> _runOpenApp(TaskTracker tr) async {
+    final query = tr.snapshot.params['query'] as String;
+    if (tr.stepStatus('resolve') == null) {
+      tr.addStep(TaskStep(id: 'resolve', description: 'Identify app "$query"'));
+      tr.addStep(const TaskStep(id: 'launch', description: 'Launch app'));
+    }
+    String? pkg = tr.snapshot.params['package'] as String?;
+    String? label = tr.snapshot.params['label'] as String?;
+    if (pkg == null) {
+      final matches = await tr.step('resolve', () => apps.resolve(query));
+      final list = matches ?? const [];
+      if (list.isEmpty) {
+        tr.updateStep('resolve', status: StepStatus.failed, detail: 'Not installed');
+        throw Exception('I couldn\'t find an app called "$query" on this phone.');
+      }
+      var chosen = list.first;
+      if (list.length > 1) {
+        final i = await _askChoice('I found several apps matching "$query". Which one?',
+            list.map((a) => a.label).toList(), details: list.map((a) => a.packageName).toList(), tr: tr);
+        chosen = list[i];
+      }
+      pkg = chosen.packageName;
+      label = chosen.label;
+      tr.setParams({'package': pkg, 'label': label});
+      tr.updateStep('resolve', detail: '$label ($pkg)');
+    }
+    tr.updateStep('launch', description: 'Launch $label');
+    await tr.step('launch', () async {
+      final ok = await device.launchApp(pkg!);
+      if (!ok) throw Exception('Android did not allow $label to be launched.');
+      return ok;
+    }, doneDetail: 'Launch intent accepted by Android');
+    await _say('$label is open, ${settings.address}.', kind: 'command');
+    return '$label launched';
+  }
+
+  // ---- runner: WhatsApp send (local orchestration, approval-gated, accessibility execution)
+  Future<String?> _runWhatsApp(TaskTracker tr) async {
+    final p = tr.snapshot.params;
+    final app = MessagingApp.values.byName(p['app'] as String);
+    final isGroup = p['isGroup'] == true;
+    final recipientQuery = p['recipient'] as String;
+    if (tr.stepStatus('app') == null) {
+      tr.addStep(TaskStep(id: 'app', description: 'Check ${app.displayName} is installed'));
+      tr.addStep(TaskStep(id: 'recipient', description: 'Find ${isGroup ? 'group' : 'recipient'} "$recipientQuery"'));
+      tr.addStep(const TaskStep(id: 'message', description: 'Prepare message'));
+      tr.addStep(const TaskStep(id: 'approval', description: 'Get your approval'));
+      tr.addStep(TaskStep(id: 'send', description: 'Send on ${app.displayName}', irreversible: true));
+      tr.addStep(const TaskStep(id: 'verify', description: 'Verify message in chat'));
+    }
+    if (tr.snapshot.completedSteps.isEmpty) {
+      await _say('Certainly, ${settings.address}. Preparing a ${app.displayName} message for $recipientQuery.', kind: 'command');
+    }
+
+    await tr.step('app', () async {
+      if (!await device.isInstalled(app.packageName)) throw Exception('${app.displayName} is not installed on this phone.');
+      return true;
+    }, doneDetail: app.packageName);
+
+    // -- recipient
+    if (tr.stepStatus('recipient') != StepStatus.done) {
+      await tr.control.checkpoint();
+      tr.updateStep('recipient', status: StepStatus.running);
+      String recipientId;
+      String recipientLabel;
+      String? phone;
+      String? searchName;
+      if (isGroup) {
+        searchName = recipientQuery;
+        recipientId = 'search:${recipientQuery.toLowerCase()}';
+        recipientLabel = '$recipientQuery (group)';
+        tr.updateStep('recipient', status: StepStatus.done, detail: 'Will open the group via WhatsApp search');
+      } else {
+        var contacts = <ContactMatch>[];
+        var st = await Permission.contacts.status;
+        if (!st.isGranted) st = await Permission.contacts.request();
+        if (st.isGranted) contacts = await tr.control.guard(device.searchContacts(recipientQuery));
+        final exact = contacts.where((c) => c.name.toLowerCase() == recipientQuery.toLowerCase()).toList();
+        var pool = exact.isNotEmpty ? exact : contacts;
+        final wa = pool.where((c) => c.hasWhatsApp).toList();
+        if (wa.isNotEmpty) pool = wa;
+        if (pool.isEmpty) {
+          searchName = recipientQuery;
+          recipientId = 'search:${recipientQuery.toLowerCase()}';
+          recipientLabel = recipientQuery;
+          tr.updateStep('recipient',
+              status: StepStatus.done,
+              detail: st.isGranted
+                  ? 'Not in phone contacts — will search inside ${app.displayName}'
+                  : 'Contacts permission denied — will search inside ${app.displayName}');
+        } else {
+          var c = pool.first;
+          if (pool.length > 1) {
+            final i = await _askChoice('I found ${pool.length} contacts matching "$recipientQuery". Which one?',
+                pool.map((c) => c.name).toList(),
+                details: pool.map((c) => c.numbers.join(', ')).toList(), tr: tr);
+            c = pool[i];
+          }
+          var number = c.primaryNumber;
+          if (c.numbers.length > 1) {
+            final i = await _askChoice('${c.name} has ${c.numbers.length} numbers. Which one?', c.numbers, tr: tr);
+            number = c.numbers[i];
+          }
+          phone = number;
+          recipientId = 'tel:${number.replaceAll(RegExp(r'[^0-9+]'), '')}';
+          recipientLabel = '${c.name} ($number)';
+          speechIn.keyterms.add(c.name);
+          tr.updateStep('recipient', status: StepStatus.done, detail: recipientLabel);
+        }
+      }
+      tr.setParams({'recipientId': recipientId, 'recipientLabel': recipientLabel, 'phone': phone, 'searchName': searchName});
+    }
+
+    // -- message
+    if (tr.stepStatus('message') != StepStatus.done) {
+      await tr.control.checkpoint();
+      tr.updateStep('message', status: StepStatus.running);
+      var message = tr.snapshot.params['message'] as String?;
+      final topic = tr.snapshot.params['composeTopic'] as String?;
+      if ((message == null || message.isEmpty) && topic != null) {
+        tr.updateStep('message', description: 'Compose message with AI writer');
+        final ctx = await contextBuilder.build(sessionId: sessionId, query: topic, includeRecent: false);
+        message = await tr.control.guard(ai.composeMessage(recipientQuery, topic, ctx.text));
+      }
+      if (message == null || message.isEmpty) {
+        message = await _askFreeText(tr, 'What should the message say, ${settings.address}?');
+      }
+      tr.setParams({'message': message});
+      tr.updateStep('message', status: StepStatus.done, detail: '"$message"');
+    }
+
+    // -- approval (bound to exact recipient + content; edits require re-approval)
+    if (tr.stepStatus('approval') != StepStatus.done || !approvals.isApproved('whatsapp.send', tr.snapshot.params['recipientId'] as String, tr.snapshot.params['message'] as String)) {
+      tr.updateStep('approval', status: StepStatus.running);
+      while (true) {
+        final recipientId = tr.snapshot.params['recipientId'] as String;
+        final recipientLabel = tr.snapshot.params['recipientLabel'] as String;
+        final message = tr.snapshot.params['message'] as String;
+        final req = ApprovalRequest(
+          id: '${tr.snapshot.id}-${DateTime.now().millisecondsSinceEpoch}',
+          actionType: 'whatsapp.send',
+          title: 'Send ${app.displayName} message',
+          recipientId: recipientId,
+          recipientLabel: recipientLabel,
+          content: message,
+          appLabel: app.displayName,
+        );
+        final reply = await _askApproval(tr, req,
+            '${settings.address}, I\'ve prepared this message for ${recipientLabel.replaceAll(RegExp(r' \(.*\)$'), '')}: "$message". Shall I send it?');
+        if (reply.answer == _ApprovalAnswer.approve) {
+          tr.setState(AgentState.running);
+          tr.updateStep('approval', status: StepStatus.done, detail: 'Approved: "$message"');
+          break;
+        }
+        if (reply.answer == _ApprovalAnswer.reject) {
+          tr.updateStep('approval', status: StepStatus.failed, detail: 'You declined');
+          tr.cancelRemaining();
+          tr.setState(AgentState.cancelled, result: 'Not sent — you declined');
+          if (identical(_tracker, tr)) _tracker = null;
+          await _say('Understood, ${settings.address}. I won\'t send it.', kind: 'approval');
+          return 'Not sent';
+        }
+        // edit → new content, ask again
+        tr.setParams({'message': reply.newText});
+        tr.updateStep('message', detail: '"${reply.newText}" (edited)');
+        tr.setState(AgentState.planning);
+      }
+    }
+
+    // -- send (irreversible; NOT raced with abort so we never misreport a sent message)
+    await tr.control.checkpoint();
+    final recipientId = tr.snapshot.params['recipientId'] as String;
+    final message = tr.snapshot.params['message'] as String;
+    final phone = tr.snapshot.params['phone'] as String?;
+    final searchName = tr.snapshot.params['searchName'] as String?;
+    if (!approvals.consume('whatsapp.send', recipientId, message)) {
+      throw Exception('The approval no longer matches the message, so I did not send it.');
+    }
+    tr.updateStep('send', status: StepStatus.running);
+    if (!await device.accessibilityEnabled()) {
+      if (phone != null) {
+        final opened = await device.openWhatsAppChat(app.packageName, phone, message);
+        if (!opened) throw Exception('I couldn\'t open the ${app.displayName} chat.');
+        tr.updateStep('send', status: StepStatus.skipped, detail: 'Accessibility is off — chat opened with the message pre-filled');
+        tr.updateStep('verify', status: StepStatus.skipped, detail: 'You need to tap Send');
+        await _say('The JARVIS accessibility service is off, so I can\'t press Send myself. I\'ve opened the chat with your message ready, ${settings.address}. Please tap Send.',
+            kind: 'command');
+        return 'Chat opened with pre-filled message (user must tap Send)';
+      }
+      throw Exception('To message a group I need the JARVIS accessibility service. Enable it in Permissions.');
+    }
+    var result = await device.whatsappSend(packageName: app.packageName, phone: phone, searchName: searchName, message: message);
+    if (result.status == WhatsAppSendStatus.ambiguous && result.candidates.isNotEmpty) {
+      final i = await _askChoice('I found several chats matching "$searchName". Which one?', result.candidates, tr: tr);
+      final pickedName = result.candidates[i];
+      // Recipient changed from a search term to a specific chat → approval must be renewed.
+      final newId = 'search:${pickedName.toLowerCase()}';
+      tr.setParams({'searchName': pickedName, 'recipientId': newId, 'recipientLabel': pickedName});
+      final reply = await _askApproval(
+          tr,
+          ApprovalRequest(
+              id: '${tr.snapshot.id}-chat', actionType: 'whatsapp.send', title: 'Send ${app.displayName} message',
+              recipientId: newId, recipientLabel: pickedName, content: message, appLabel: app.displayName),
+          'Send "$message" to $pickedName, ${settings.address}?');
+      if (reply.answer != _ApprovalAnswer.approve || !approvals.consume('whatsapp.send', newId, message)) {
+        tr.cancelRemaining();
+        tr.setState(AgentState.cancelled, result: 'Not sent');
+        await _say('Alright, I haven\'t sent anything.', kind: 'approval');
+        return 'Not sent';
+      }
+      tr.setState(AgentState.running);
+      result = await device.whatsappSend(packageName: app.packageName, searchName: pickedName, message: message);
+    }
+    unawaited(device.bringToFront());
+    if (!result.sendPressed) {
+      tr.updateStep('send', status: result.status == WhatsAppSendStatus.cancelled ? StepStatus.cancelled : StepStatus.failed,
+          detail: result.reason);
+      if (result.status == WhatsAppSendStatus.cancelled) throw TaskAbort(AgentState.interrupted);
+      throw Exception('The message was not sent: ${result.reason ?? 'unknown reason'}.');
+    }
+    tr.updateStep('send', status: StepStatus.done, detail: 'Send pressed in ${result.chatTitle ?? app.displayName}');
+    if (result.status == WhatsAppSendStatus.verified) {
+      tr.updateStep('verify', status: StepStatus.done, detail: 'Message visible in the chat');
+      await _say('Done, ${settings.address}. Your message to ${result.chatTitle ?? recipientQuery} has been sent — I can see it in the chat.',
+          kind: 'command');
+      return 'Sent and verified in chat';
+    }
+    tr.updateStep('verify', status: StepStatus.failed, detail: result.reason ?? 'Could not confirm in the chat view');
+    await _say('I pressed Send in ${result.chatTitle ?? 'the chat'}, ${settings.address}, but I couldn\'t confirm the message in the chat view. Please check.',
+        kind: 'command');
+    return 'Send pressed, not verified';
+  }
+
+  // ---- runner: delete all history (approval-gated, local)
+  Future<String?> _runForgetAll(TaskTracker tr) async {
+    if (tr.stepStatus('approval') == null) {
+      tr.addStep(const TaskStep(id: 'approval', description: 'Get your approval'));
+      tr.addStep(const TaskStep(id: 'delete', description: 'Delete conversations, tasks and remembered facts', irreversible: true));
+    }
+    final reply = await _askApproval(
+        tr,
+        ApprovalRequest(id: 'forget-${tr.snapshot.id}', actionType: 'memory.delete_all', title: 'Delete all memory',
+            content: 'All conversations, task history and remembered facts'),
+        'This will permanently delete all conversations, task history and remembered facts, ${settings.address}. Shall I proceed?');
+    if (reply.answer != _ApprovalAnswer.approve || !approvals.consume('memory.delete_all', null, 'All conversations, task history and remembered facts')) {
+      tr.cancelRemaining();
+      tr.setState(AgentState.cancelled, result: 'Kept memory');
+      if (identical(_tracker, tr)) _tracker = null;
+      await _say('Understood. I\'ve kept everything.');
+      return null;
+    }
+    tr.updateStep('approval', status: StepStatus.done);
+    tr.setState(AgentState.running);
+    tr.updateStep('delete', status: StepStatus.running);
+    await memory.deleteAllConversations();
+    await memory.deleteAllFacts();
+    tr.updateStep('delete', status: StepStatus.done);
+    sessionId = await memory.resumeOrStartSession();
+    messages = [];
+    previousSessionTail = [];
+    _tracker = null;
+    task = null;
+    notifyListeners();
+    await _say('Done, ${settings.address}. All conversation history has been deleted.');
+    return 'Deleted';
+  }
+
+  // ---- runner: knowledge (AI)
+  Future<String?> _runKnowledge(TaskTracker tr) async {
+    final q = tr.snapshot.params['text'] as String;
+    if (tr.stepStatus('context') == null) {
+      tr.addStep(const TaskStep(id: 'context', description: 'Retrieve relevant memory (local)'));
+      tr.addStep(const TaskStep(id: 'ai', description: 'Ask Gemini'));
+    }
+    if (!ai.isConfigured) throw AiNotConfigured();
+    final ctx = await tr.step('context', () => contextBuilder.build(sessionId: sessionId, query: q));
+    tr.updateStep('context', detail: ctx == null || ctx.isEmpty ? 'No context needed' : ctx.sources.join(', '));
+    final answer = await tr.step('ai', () => ai.answer(q, ctx?.text ?? ''));
+    if (answer == null) return null;
+    await _say(answer, route: 'ai', kind: 'knowledge');
+    return 'Answered';
+  }
+
+  // ---- runner: writing (AI) — produces a draft for review, never sends
+  Future<String?> _runWrite(TaskTracker tr) async {
+    final q = tr.snapshot.params['text'] as String;
+    final kind = WritingKind.values.byName(tr.snapshot.params['writeKind'] as String);
+    if (tr.stepStatus('context') == null) {
+      tr.addStep(const TaskStep(id: 'context', description: 'Retrieve relevant memory (local)'));
+      tr.addStep(const TaskStep(id: 'ai', description: 'Draft with Gemini'));
+    }
+    if (!ai.isConfigured) throw AiNotConfigured();
+    final ctx = await tr.step('context', () => contextBuilder.build(sessionId: sessionId, query: q, includeRecent: kind == WritingKind.rewrite));
+    final d = await tr.step('ai', () => ai.write(kind, q, ctx?.text ?? ''));
+    if (d == null) return null;
+    _presentDraft(d);
+    return 'Draft ready for review';
+  }
+
+  void _presentDraft(AiDraft d) {
+    draft = Draft(d.kind, d.subject, d.content);
+    notifyListeners();
+    final a = settings.address;
+    final line = switch (d.kind) {
+      WritingKind.email => '$a, I\'ve prepared your email. Would you like to review or send it?',
+      WritingKind.message => 'I\'ve drafted the message, $a. It\'s on screen for your review.',
+      WritingKind.rewrite => 'Here\'s the improved version, $a. It\'s on screen.',
+      _ => 'The draft is ready for your review, $a.',
+    };
+    unawaited(_say(line, route: 'ai', kind: 'write', extraStoredText: '\n\n${d.subject != null ? 'Subject: ${d.subject}\n\n' : ''}${d.content}'));
+  }
+
+  void dismissDraft() {
+    draft = null;
+    notifyListeners();
+  }
+
+  Future<void> emailDraft() async {
+    final d = draft;
+    if (d == null) return;
+    final ok = await device.composeEmail(d.subject, d.content);
+    if (!ok) _setBanner('No email app could open the draft.');
+  }
+
+  // ---- runner: AI fallback understanding → validated structured proposal
+  Future<String?> _runAiRoute(TaskTracker tr) async {
+    final q = tr.snapshot.params['text'] as String;
+    if (tr.stepStatus('context') == null) {
+      tr.addStep(const TaskStep(id: 'context', description: 'Retrieve relevant memory (local)'));
+      tr.addStep(const TaskStep(id: 'ai', description: 'Understand request with Gemini'));
+    }
+    if (!ai.isConfigured) throw AiNotConfigured();
+    final ctx = await tr.step('context', () => contextBuilder.build(sessionId: sessionId, query: q));
+    final installed = (await apps.apps()).map((a) => a.label).toList();
+    final proposal = await tr.step('ai', () => ai.route(q, ctx?.text ?? '', installed));
+    switch (proposal) {
+      case AiAnswer(:final text):
+        await _say(text, route: 'ai', kind: 'conversation');
+        return 'Answered';
+      case AiClarify(:final question):
+        await _say(question, route: 'ai', kind: 'question');
+        return 'Asked for clarification';
+      case AiDraft():
+        _presentDraft(proposal);
+        return 'Draft ready for review';
+      case AiOpenApp(:final app):
+        tr.addStep(TaskStep(id: 'handoff', description: 'Hand off to local executor: open "$app"'));
+        tr.updateStep('handoff', status: StepStatus.done);
+        tr.setState(AgentState.completed, result: 'Handed off');
+        _tracker = null;
+        _startTask('Open $app', 'open_app', TaskRoute.ai, {'query': app});
+        return null;
+      case AiSendMessage():
+        tr.addStep(TaskStep(id: 'handoff', description: 'Hand off to local executor: message ${proposal.recipient}'));
+        tr.updateStep('handoff', status: StepStatus.done);
+        tr.setState(AgentState.completed, result: 'Handed off');
+        _tracker = null;
+        _startTask('Send ${proposal.app.displayName} message to ${proposal.recipient}', 'whatsapp_send', TaskRoute.ai, {
+          'app': proposal.app.name,
+          'recipient': proposal.recipient,
+          'isGroup': proposal.isGroup,
+          'message': proposal.message,
+        });
+        return null;
+      case null:
+        return null;
+    }
+  }
+
+  // ------------------------------------------------------------------ speaking & storage
+  Future<void> _store(String role, String text, {String? source, String? route, String? kind}) async {
+    final m = await memory.addMessage(sessionId: sessionId, role: role, text: text, source: source, route: route, kind: kind);
+    messages = [...messages, m];
+    notifyListeners();
+  }
+
+  Future<void> _say(String text, {bool store = true, String route = 'local', String? kind, String extraStoredText = ''}) async {
+    if (store) await _store('jarvis', '$text$extraStoredText', route: route, kind: kind);
+    if (settings.speakResponses) {
+      await speechOut.speak(text);
+      if (speechOut.lastError != null && speechOut.lastEngine == 'device') {
+        banner ??= speechOut.lastError;
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ history helpers
+  Future<void> reloadSession() async {
+    messages = await memory.messagesOf(sessionId, limit: 200);
+    notifyListeners();
+  }
+
+  static String _ordinal(int i) => const ['First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth'][i.clamp(0, 5)];
+  static String _weekday(DateTime d) => const ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][d.weekday - 1];
+  static String _month(DateTime d) => const [
+        'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'
+      ][d.month - 1];
+  static String _shortDate(DateTime d) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(d.year, d.month, d.day);
+    final diff = today.difference(day).inDays;
+    if (diff == 0) return 'today';
+    if (diff == 1) return 'yesterday';
+    return '${d.day} ${_month(d)}';
+  }
+
+  @override
+  void dispose() {
+    _eventsSub?.cancel();
+    super.dispose();
+  }
+}
