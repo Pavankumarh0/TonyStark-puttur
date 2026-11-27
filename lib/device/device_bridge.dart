@@ -1,0 +1,161 @@
+import 'dart:async';
+
+import 'package:flutter/services.dart';
+
+class InstalledApp {
+  final String label;
+  final String packageName;
+  const InstalledApp(this.label, this.packageName);
+}
+
+class ContactMatch {
+  final String name;
+  final List<String> numbers;
+  final bool hasWhatsApp;
+  const ContactMatch(this.name, this.numbers, this.hasWhatsApp);
+
+  /// Primary number used as the stable recipient id for approvals.
+  String get primaryNumber => numbers.first;
+}
+
+enum WhatsAppSendStatus { verified, sentUnverified, failed, cancelled, ambiguous }
+
+class WhatsAppSendResult {
+  final WhatsAppSendStatus status;
+  final String? reason;
+  final String? chatTitle;
+  final List<String> candidates;
+  final List<String> trace;
+  const WhatsAppSendResult(this.status, {this.reason, this.chatTitle, this.candidates = const [], this.trace = const []});
+
+  factory WhatsAppSendResult.fromMap(Map m) => WhatsAppSendResult(
+        switch (m['status']) {
+          'verified' => WhatsAppSendStatus.verified,
+          'sent_unverified' => WhatsAppSendStatus.sentUnverified,
+          'cancelled' => WhatsAppSendStatus.cancelled,
+          'ambiguous' => WhatsAppSendStatus.ambiguous,
+          _ => WhatsAppSendStatus.failed,
+        },
+        reason: m['reason'] as String?,
+        chatTitle: m['chatTitle'] as String?,
+        candidates: ((m['candidates'] as List?) ?? const []).cast<String>(),
+        trace: ((m['trace'] as List?) ?? const []).cast<String>(),
+      );
+
+  /// True if the Send button was actually pressed (the message may be out — irreversible).
+  bool get sendPressed => status == WhatsAppSendStatus.verified || status == WhatsAppSendStatus.sentUnverified;
+}
+
+/// Dart side of the native Android device-control layer (Kotlin: DeviceChannel.kt).
+/// Receives only structured, already-approved actions.
+class DeviceBridge {
+  static const _ch = MethodChannel('jarvis/device');
+  static const _events = EventChannel('jarvis/events');
+
+  Stream<Map<String, dynamic>>? _eventStream;
+  Stream<Map<String, dynamic>> get events => _eventStream ??=
+      _events.receiveBroadcastStream().map((e) => Map<String, dynamic>.from(e as Map));
+
+  Future<List<InstalledApp>> launchableApps() async {
+    final list = await _ch.invokeListMethod<Map>('getLaunchableApps') ?? [];
+    return [for (final m in list) InstalledApp(m['label'] as String, m['package'] as String)];
+  }
+
+  Future<bool> launchApp(String packageName) async =>
+      await _ch.invokeMethod<bool>('launchApp', {'package': packageName}) ?? false;
+
+  Future<bool> isInstalled(String packageName) async =>
+      await _ch.invokeMethod<bool>('isInstalled', {'package': packageName}) ?? false;
+
+  Future<List<ContactMatch>> searchContacts(String query) async {
+    final list = await _ch.invokeListMethod<Map>('searchContacts', {'query': query}) ?? [];
+    return [
+      for (final m in list)
+        ContactMatch(m['name'] as String, ((m['numbers'] as List?) ?? const []).cast<String>(), m['whatsapp'] == true)
+    ];
+  }
+
+  Future<bool> accessibilityEnabled() async => await _ch.invokeMethod<bool>('accessibilityEnabled') ?? false;
+  Future<void> openAccessibilitySettings() => _ch.invokeMethod('openAccessibilitySettings');
+  Future<void> openAppSettings() => _ch.invokeMethod('openAppSettings');
+  Future<bool> isIgnoringBatteryOptimizations() async =>
+      await _ch.invokeMethod<bool>('isIgnoringBatteryOptimizations') ?? false;
+  Future<void> requestIgnoreBatteryOptimizations() => _ch.invokeMethod('requestIgnoreBatteryOptimizations');
+
+  Future<bool> startListenerService() async => await _ch.invokeMethod<bool>('startListenerService') ?? false;
+  Future<void> stopListenerService() => _ch.invokeMethod('stopListenerService');
+  Future<bool> isListenerServiceRunning() async => await _ch.invokeMethod<bool>('isListenerServiceRunning') ?? false;
+  Future<void> updateServiceStatus(String text) => _ch.invokeMethod('updateServiceStatus', {'text': text});
+
+  /// Opens the chat with the message pre-filled; the USER presses Send (no accessibility needed).
+  Future<bool> openWhatsAppChat(String packageName, String phone, String text) async =>
+      await _ch.invokeMethod<bool>('openWhatsAppChat', {'package': packageName, 'phone': phone, 'text': text}) ?? false;
+
+  /// Performs an approved send through the accessibility service and verifies the result.
+  Future<WhatsAppSendResult> whatsappSend({
+    required String packageName,
+    String? phone,
+    String? searchName,
+    required String message,
+  }) async {
+    final m = await _ch.invokeMapMethod<String, dynamic>('whatsappSend', {
+      'package': packageName,
+      'phone': phone,
+      'searchName': searchName,
+      'message': message,
+    });
+    return WhatsAppSendResult.fromMap(m ?? const {'status': 'failed', 'reason': 'No result from device layer'});
+  }
+
+  Future<void> whatsappCancel() => _ch.invokeMethod('whatsappCancel');
+  Future<void> bringToFront() => _ch.invokeMethod('bringToFront');
+  Future<bool> composeEmail(String? subject, String body) async =>
+      await _ch.invokeMethod<bool>('composeEmail', {'subject': subject, 'body': body}) ?? false;
+
+  // ---- media / calls / notifications (all local, no AI)
+  Future<Map<String, dynamic>> playMedia(String app, String query) async =>
+      await _ch.invokeMapMethod<String, dynamic>('playMedia', {'app': app, 'query': query}) ??
+      const {'status': 'failed', 'reason': 'No result'};
+
+  /// Returns "calling", "dialer_opened" (no CALL_PHONE permission) or "failed:<reason>".
+  Future<String> placeCall(String number) async =>
+      await _ch.invokeMethod<String>('placeCall', {'number': number}) ?? 'failed:no result';
+
+  Future<bool> notificationAccess() async => await _ch.invokeMethod<bool>('notificationAccess') ?? false;
+  Future<void> openNotificationAccessSettings() => _ch.invokeMethod('openNotificationAccessSettings');
+
+  Future<List<NotificationItem>> readNotifications({bool whatsapp = true, bool email = true}) async {
+    final list = await _ch.invokeListMethod<Map>('readNotifications', {
+          'kinds': [if (whatsapp) 'whatsapp', if (email) 'email']
+        }) ??
+        [];
+    return [for (final m in list) NotificationItem.fromMap(m)];
+  }
+
+  // ---- assistant role / half-screen panel
+  Future<bool> isDefaultAssistant() async => await _ch.invokeMethod<bool>('isDefaultAssistant') ?? false;
+  Future<void> openAssistantSettings() => _ch.invokeMethod('openAssistantSettings');
+  Future<void> closeAssist() => _ch.invokeMethod('closeAssist');
+  Future<void> openFullApp() => _ch.invokeMethod('openFullApp');
+}
+
+class NotificationItem {
+  final String packageName;
+  final String title;
+  final List<String> lines;
+  final int count;
+  final DateTime time;
+  final String? subText;
+  const NotificationItem(this.packageName, this.title, this.lines, this.count, this.time, this.subText);
+
+  bool get isWhatsApp => packageName.startsWith('com.whatsapp');
+
+  factory NotificationItem.fromMap(Map m) => NotificationItem(
+        m['package'] as String,
+        m['title'] as String,
+        ((m['lines'] as List?) ?? const []).cast<String>(),
+        (m['count'] as int?) ?? 0,
+        DateTime.fromMillisecondsSinceEpoch((m['time'] as int?) ?? 0),
+        m['subText'] as String?,
+      );
+}
