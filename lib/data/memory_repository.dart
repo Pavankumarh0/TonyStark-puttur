@@ -373,6 +373,41 @@ class MemoryRepository {
         'ok': ok ? 1 : 0,
       });
 
+  Future<void> logCloud({
+    required String provider,
+    required String model,
+    required String purpose,
+    required String sentText,
+    required int maskedCount,
+    int? input,
+    int? output,
+    int? cached,
+    double? cost,
+    String? currency,
+    int? latencyMs,
+    required bool ok,
+  }) =>
+      _database.db.insert('cloud_log', {
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+        'provider': provider,
+        'model': model,
+        'purpose': purpose,
+        'sent_text': sentText,
+        'masked_count': maskedCount,
+        'input_tokens': input,
+        'output_tokens': output,
+        'cached_tokens': cached,
+        'cost': cost,
+        'currency': currency,
+        'latency_ms': latencyMs,
+        'ok': ok ? 1 : 0,
+      });
+
+  Future<List<Map<String, Object?>>> cloudLog({int limit = 50}) =>
+      _database.db.query('cloud_log', orderBy: 'created_at DESC', limit: limit);
+
+  Future<void> clearCloudLog() => _database.db.delete('cloud_log');
+
   Future<void> logVoiceUsage(String kind, double units, bool ok) => _database.db.insert('voice_usage', {
         'created_at': DateTime.now().millisecondsSinceEpoch,
         'kind': kind,

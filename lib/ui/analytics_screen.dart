@@ -15,11 +15,19 @@ class AnalyticsScreen extends StatefulWidget {
 
 class _AnalyticsScreenState extends State<AnalyticsScreen> {
   UsageTotals? _u;
+  List<Map<String, Object?>> _ledger = const [];
   int _last = -1;
 
   Future<void> _load() async {
-    final u = await context.read<MemoryRepository>().usageTotals();
-    if (mounted) setState(() => _u = u);
+    final repo = context.read<MemoryRepository>();
+    final u = await repo.usageTotals();
+    final l = await repo.cloudLog(limit: 30);
+    if (mounted) {
+      setState(() {
+        _u = u;
+        _ledger = l;
+      });
+    }
   }
 
   @override
@@ -100,8 +108,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
               Expanded(child: _tile('Text-to-speech', '${u.ttsRequests}', JColors.ice, '${_n(u.ttsChars)} chars')),
             ]),
             const SizedBox(height: 6),
-            const Text('Wake-word detection runs on-device (Porcupine) and is never sent anywhere.',
+            const Text('Wake-word detection runs on-device (sherpa-onnx) and is never sent anywhere.',
                 style: TextStyle(color: JColors.dim, fontSize: 12)),
+            const SizedBox(height: 20),
+            ..._privacyLedger(),
             const SizedBox(height: 20),
             OutlinedButton.icon(
               onPressed: () async {
@@ -113,6 +123,82 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
             ),
           ],
         ],
+      ),
+    );
+  }
+
+  /// What left the phone: every cloud "understanding" request, exactly as sent (after masking).
+  List<Widget> _privacyLedger() {
+    final ok = _ledger.where((r) => r['ok'] == 1).toList();
+    int sum(String k) => ok.fold<int>(0, (a, r) => a + ((r[k] as int?) ?? 0));
+    double money(String cur) =>
+        ok.where((r) => r['currency'] == cur).fold<double>(0, (a, r) => a + ((r['cost'] as num?)?.toDouble() ?? 0));
+    final tokens = sum('input_tokens') + sum('output_tokens');
+    final masked = _ledger.fold<int>(0, (a, r) => a + ((r['masked_count'] as int?) ?? 0));
+    final avgMs = ok.isEmpty ? 0 : (sum('latency_ms') / ok.length).round();
+    final usd = money('USD'), inr = money('INR');
+    String t(int ms) {
+      final d = DateTime.fromMillisecondsSinceEpoch(ms);
+      return '${d.day}/${d.month} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+    }
+
+    String spent() => usd > 0 ? '\$${usd.toStringAsFixed(4)}' : (inr > 0 ? '₹${inr.toStringAsFixed(3)}' : '0');
+
+    return [
+      _section('CLOUD UNDERSTANDING · PRIVACY LEDGER (last ${_ledger.length})'),
+      Row(children: [
+        Expanded(
+            child: _tile('Requests', '${_ledger.length}', JColors.cyan,
+                ok.isEmpty ? 'none yet' : 'avg ${(tokens / ok.length).round()} tokens · $avgMs ms')),
+        const SizedBox(width: 10),
+        Expanded(
+            child: _tile('Spent', spent(), JColors.green,
+                '${usd > 0 && inr > 0 ? '+ ₹${inr.toStringAsFixed(3)} · ' : ''}${_n(tokens)} tokens')),
+      ]),
+      const SizedBox(height: 6),
+      Text(
+          '$masked private item${masked == 1 ? '' : 's'} (phone numbers, emails, OTPs, IDs) were masked before sending. '
+          'Below is exactly what each provider received.',
+          style: const TextStyle(color: JColors.dim, fontSize: 12)),
+      const SizedBox(height: 8),
+      for (final r in _ledger.take(15)) _ledgerCard(r, t),
+      if (_ledger.isNotEmpty)
+        TextButton.icon(
+          onPressed: () async {
+            await context.read<MemoryRepository>().clearCloudLog();
+            await _load();
+          },
+          icon: const Icon(Icons.delete_outline),
+          label: const Text('Clear privacy ledger'),
+        ),
+    ];
+  }
+
+  Widget _ledgerCard(Map<String, Object?> r, String Function(int) t) {
+    final inT = r['input_tokens'] as int? ?? 0, outT = r['output_tokens'] as int? ?? 0, cached = r['cached_tokens'] as int? ?? 0;
+    final masked = r['masked_count'] as int? ?? 0;
+    final cost = r['cost'] as num?;
+    final cur = r['currency'] == 'USD' ? '\$' : '₹';
+    final line = r['ok'] == 1
+        ? '${inT + outT} tokens${cached > 0 ? ' ($cached cached)' : ''}'
+            '${cost == null ? '' : ' · $cur${cost.toStringAsFixed(5)}'} · ${r['latency_ms'] ?? '?'} ms'
+            '${masked > 0 ? ' · $masked masked' : ''}'
+        : 'failed — LEO fell back to on-device handling';
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Text('${r['provider'] == 'openai' ? 'OpenAI' : 'Sarvam'} · ${r['model']}',
+                style: const TextStyle(color: JColors.cyan, fontSize: 12)),
+            const Spacer(),
+            Text(t(r['created_at'] as int), style: const TextStyle(color: JColors.dim, fontSize: 11)),
+          ]),
+          const SizedBox(height: 4),
+          Text('"${r['sent_text']}"', style: const TextStyle(fontSize: 13)),
+          const SizedBox(height: 4),
+          Text(line, style: const TextStyle(color: JColors.dim, fontSize: 11)),
+        ]),
       ),
     );
   }

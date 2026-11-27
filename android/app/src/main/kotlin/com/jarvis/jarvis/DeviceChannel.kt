@@ -142,6 +142,11 @@ object DeviceChannel {
             // ---------------- process-scoped microphone
             "wakePopup" -> result.success(WakePopup.show(app))
             "uiVisible" -> result.success(JarvisApplication.visibleScreens > 0)
+            "applySecureScreen" -> {
+                val on = call.argument<Boolean>("on")
+                JarvisApplication.activeHost?.let { a -> a.runOnUiThread { JarvisApplication.applySecure(a, on) } }
+                result.success(null)
+            }
             "micStart" -> result.success(MicStreamer.start())
             "micStop" -> { MicStreamer.stop(); result.success(null) }
             "micRunning" -> result.success(MicStreamer.isRunning)

@@ -100,6 +100,12 @@ class SettingsScreen extends StatelessWidget {
           onSaved: () {},
         ),
         _KeyTile(
+          k: SecretKey.openai,
+          title: 'OpenAI API key (optional)',
+          help: 'platform.openai.com → API keys. Used only to understand free-form requests; personal data is masked first.',
+          onSaved: () {},
+        ),
+        _KeyTile(
           k: SecretKey.picovoice,
           title: 'Picovoice AccessKey (optional)',
           help:
@@ -191,10 +197,39 @@ class SettingsScreen extends StatelessWidget {
         SwitchListTile(
           value: s.sarvamUnderstanding,
           onChanged: (v) => s.sarvamUnderstanding = v,
-          title: const Text('Smart understanding (Sarvam AI)'),
+          title: const Text('Smart understanding (cloud)'),
           subtitle: const Text(
-              'When LEO isn\'t sure what you meant, Sarvam rewrites it into clear steps (and answers questions). '
-              'Everyday commands stay on the phone; every action still asks you where it should.',
+              'When LEO isn\'t sure what you meant, a cloud model rewrites it into clear steps (and answers questions). '
+              'Everyday commands stay on the phone. Phone numbers, emails, OTPs and IDs are masked before sending.',
+              style: TextStyle(color: JColors.dim)),
+        ),
+        ListTile(
+          title: const Text('Understanding model'),
+          subtitle: Text(
+              switch (s.understandingProvider) {
+                'openai' => 'OpenAI · ${s.openAiModel}',
+                'sarvam' => 'Sarvam · sarvam-105b-conversations',
+                _ => s.hasSecret(SecretKey.openai) ? 'Auto → OpenAI · ${s.openAiModel}' : 'Auto → Sarvam (no OpenAI key)',
+              },
+              style: const TextStyle(color: JColors.dim)),
+          trailing: DropdownButton<String>(
+            value: s.understandingProvider,
+            onChanged: (v) => s.understandingProvider = v ?? 'auto',
+            items: const [
+              DropdownMenuItem(value: 'auto', child: Text('Auto')),
+              DropdownMenuItem(value: 'openai', child: Text('OpenAI')),
+              DropdownMenuItem(value: 'sarvam', child: Text('Sarvam')),
+            ],
+          ),
+        ),
+        SwitchListTile(
+          value: s.secureScreen,
+          onChanged: (v) {
+            s.secureScreen = v;
+            o.device.applySecureScreen(v);
+          },
+          title: const Text('Hide LEO from screenshots & recording'),
+          subtitle: const Text('Other apps (and screen recorders) see a black screen instead of your conversations.',
               style: TextStyle(color: JColors.dim)),
         ),
         SwitchListTile(

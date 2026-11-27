@@ -27,6 +27,7 @@ class MainActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         JarvisApplication.visibleScreens++
+        JarvisApplication.applySecure(this)
         // The single engine can render into one window at a time. If the assistant panel took it
         // over while we were in the background, re-attach by recreating this activity.
         val host: Activity? = JarvisApplication.activeHost

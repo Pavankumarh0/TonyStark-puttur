@@ -151,6 +151,13 @@ class DeviceBridge {
     }
   }
 
+  /// Re-applies the "hide from screenshots" setting to the LEO window on screen.
+  Future<void> applySecureScreen(bool on) async {
+    try {
+      await _ch.invokeMethod('applySecureScreen', {'on': on});
+    } catch (_) {}
+  }
+
   /// Is a LEO screen (main app or assistant panel) showing right now?
   Future<bool> uiVisible() async {
     try {

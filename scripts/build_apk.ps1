@@ -2,7 +2,7 @@
 # connected phone and starts it.   Usage:  .\scripts\build_apk.ps1  [-Release]
 #
 # lib/.env format (one per line):  NAME=value
-#   GEMINI_API_KEY, SARVAM_API_KEY, PICOVOICE_ACCESS_KEY (optional), GEMINI_MODEL (optional)
+#   GEMINI_API_KEY, SARVAM_API_KEY, OPENAI_API_KEY (optional), PICOVOICE_ACCESS_KEY (optional), GEMINI_MODEL (optional)
 # Only the first word of each value is used, so trailing notes on a line are ignored.
 param([switch]$Release)
 $ErrorActionPreference = "Stop"

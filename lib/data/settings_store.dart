@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum SecretKey { gemini, sarvam, picovoice }
+enum SecretKey { gemini, sarvam, picovoice, openai }
 
 /// Non-secret preferences in SharedPreferences; API keys in Android Keystore-backed secure storage.
 /// Keys are never written to source code or logs.
@@ -18,6 +18,7 @@ class SettingsStore extends ChangeNotifier {
     SecretKey.gemini: String.fromEnvironment('GEMINI_API_KEY'),
     SecretKey.sarvam: String.fromEnvironment('SARVAM_API_KEY'),
     SecretKey.picovoice: String.fromEnvironment('PICOVOICE_ACCESS_KEY'),
+    SecretKey.openai: String.fromEnvironment('OPENAI_API_KEY'),
   };
   static const _builtInModel = String.fromEnvironment('GEMINI_MODEL');
 
@@ -104,6 +105,18 @@ class SettingsStore extends ChangeNotifier {
 
   bool get speakResponses => _prefs.getBool('speak_responses') ?? true;
   set speakResponses(bool v) => _setB('speak_responses', v);
+
+  /// Which cloud model explains free-form requests to LEO: auto (OpenAI if a key is set, else Sarvam) | openai | sarvam.
+  String get understandingProvider => _prefs.getString('understanding_provider') ?? 'auto';
+  set understandingProvider(String v) => _set('understanding_provider', v);
+
+  /// OpenAI model for understanding. Small + non-reasoning = fast and cheap.
+  String get openAiModel => _prefs.getString('openai_model') ?? 'gpt-4o-mini';
+  set openAiModel(String v) => _set('openai_model', v.trim());
+
+  /// Hide LEO's screens from screenshots, screen recording and the recent-apps preview.
+  bool get secureScreen => _prefs.getBool('secure_screen') ?? false;
+  set secureScreen(bool v) => _setB('secure_screen', v);
 
   /// Let Sarvam's chat model understand free-form speech and turn it into clear LEO commands.
   bool get sarvamUnderstanding => _prefs.getBool('sarvam_understanding') ?? true;

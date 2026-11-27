@@ -1,0 +1,78 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:http/http.dart' as http;
+
+import 'sarvam_brain.dart';
+
+/// Same job as [SarvamBrain] — turn what the user said into plain LEO commands — using OpenAI.
+///
+/// Chosen for speed and low token use:
+///  * a small non-reasoning model (default gpt-4o-mini: ~0.5 s, no hidden "thinking" tokens),
+///  * one short, FIXED system prompt sent first so OpenAI's automatic prompt cache can reuse it,
+///  * JSON output capped at a few hundred tokens,
+///  * `store: false` — the request isn't kept for OpenAI's evals/distillation products.
+/// Personal identifiers are removed before this is called (see PrivacyFilter).
+class OpenAiBrain {
+  static const _url = 'https://api.openai.com/v1/chat/completions';
+  http.Client _client = http.Client();
+
+  void cancel() {
+    _client.close();
+    _client = http.Client();
+  }
+
+  Future<Interpretation?> interpret({
+    required String apiKey,
+    required String model,
+    required String utterance,
+    String? screenApp,
+    List<String> recentTurns = const [],
+  }) async {
+    final ctx = StringBuffer();
+    if (screenApp != null) ctx.writeln('App on screen: $screenApp');
+    if (recentTurns.isNotEmpty) ctx.writeln('Recent conversation:\n${recentTurns.join('\n')}');
+    final body = {
+      'model': model,
+      'messages': [
+        // Fixed prefix first → cacheable across requests.
+        {'role': 'system', 'content': SarvamBrain.systemPrompt},
+        {'role': 'user', 'content': '${ctx.isEmpty ? '' : '$ctx\n'}User said: "$utterance"'},
+      ],
+      'temperature': 0.1,
+      'max_completion_tokens': 300,
+      'response_format': {'type': 'json_object'},
+      'store': false,
+      'prompt_cache_key': 'leo-understand-v1',
+    };
+    final sw = Stopwatch()..start();
+    final http.Response res;
+    try {
+      res = await _client
+          .post(Uri.parse(_url),
+              headers: {'Authorization': 'Bearer $apiKey', 'Content-Type': 'application/json'}, body: jsonEncode(body))
+          .timeout(const Duration(seconds: 12));
+    } on TimeoutException {
+      return null;
+    } on http.ClientException {
+      return null;
+    }
+    if (res.statusCode != 200) {
+      String? msg;
+      try {
+        msg = ((jsonDecode(res.body) as Map)['error'] as Map?)?['message'] as String?;
+      } catch (_) {}
+      throw SarvamBrainException(msg ?? 'OpenAI request failed', res.statusCode);
+    }
+    final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    final content = (((j['choices'] as List?)?.firstOrNull as Map?)?['message'] as Map?)?['content'] as String? ?? '';
+    final usage = j['usage'] as Map?;
+    return SarvamBrain.parse(content,
+            inputTokens: usage?['prompt_tokens'] as int?,
+            outputTokens: usage?['completion_tokens'] as int?,
+            cachedTokens: (usage?['prompt_tokens_details'] as Map?)?['cached_tokens'] as int?,
+            provider: 'openai',
+            model: model)
+        .copyWith(latencyMs: sw.elapsedMilliseconds);
+  }
+}

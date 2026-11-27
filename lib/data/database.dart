@@ -3,7 +3,7 @@ import 'package:sqflite/sqflite.dart';
 
 /// Local, persistent store. Nothing here leaves the device.
 class JarvisDatabase {
-  static const _version = 2;
+  static const _version = 3;
   Database? _db;
 
   Database get db => _db ?? (throw StateError('Database not opened'));
@@ -18,6 +18,25 @@ class JarvisDatabase {
           created_at INTEGER NOT NULL
         )''');
 
+  /// Privacy ledger: what left the phone, already redacted, and what it cost.
+  static Future<void> _createCloudLog(Database d) => d.execute('''
+        CREATE TABLE IF NOT EXISTS cloud_log(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          created_at INTEGER NOT NULL,
+          provider TEXT NOT NULL,       -- openai | sarvam
+          model TEXT NOT NULL,
+          purpose TEXT NOT NULL,        -- understand
+          sent_text TEXT NOT NULL,      -- exactly what was sent (after masking)
+          masked_count INTEGER NOT NULL,
+          input_tokens INTEGER,
+          output_tokens INTEGER,
+          cached_tokens INTEGER,
+          cost REAL,
+          currency TEXT,
+          latency_ms INTEGER,
+          ok INTEGER NOT NULL
+        )''');
+
   Future<void> open() async {
     final dir = await getDatabasesPath();
     _db = await openDatabase(
@@ -26,6 +45,7 @@ class JarvisDatabase {
       onConfigure: (d) => d.execute('PRAGMA foreign_keys = ON'),
       onUpgrade: (d, from, to) async {
         if (from < 2) await _createLearned(d);
+        if (from < 3) await _createCloudLog(d);
       },
       onCreate: (d, v) async {
         await d.execute('''
@@ -93,6 +113,7 @@ class JarvisDatabase {
             ok INTEGER NOT NULL
           )''');
         await _createLearned(d);
+        await _createCloudLog(d);
       },
     );
   }

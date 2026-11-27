@@ -13,10 +13,64 @@ class Interpretation {
 
   /// A question back to the user when the request is genuinely unclear.
   final String? clarify;
-  final int? inputTokens, outputTokens;
-  const Interpretation({this.commands = const [], this.answer, this.clarify, this.inputTokens, this.outputTokens});
+  final int? inputTokens, outputTokens, cachedTokens;
+  final String provider, model;
+  final int latencyMs;
+  const Interpretation(
+      {this.commands = const [],
+      this.answer,
+      this.clarify,
+      this.inputTokens,
+      this.outputTokens,
+      this.cachedTokens,
+      this.provider = '',
+      this.model = '',
+      this.latencyMs = 0});
 
   bool get isEmpty => commands.isEmpty && answer == null && clarify == null;
+  int get totalTokens => (inputTokens ?? 0) + (outputTokens ?? 0);
+
+  Interpretation copyWith({List<String>? commands, String? answer, String? clarify, String? provider, String? model, int? latencyMs}) =>
+      Interpretation(
+          commands: commands ?? this.commands,
+          answer: answer ?? this.answer,
+          clarify: clarify ?? this.clarify,
+          inputTokens: inputTokens,
+          outputTokens: outputTokens,
+          cachedTokens: cachedTokens,
+          provider: provider ?? this.provider,
+          model: model ?? this.model,
+          latencyMs: latencyMs ?? this.latencyMs);
+
+  /// Cost of this one call, in the provider's billing currency (USD for OpenAI, INR for Sarvam).
+  ({double amount, String currency})? get cost => Pricing.cost(provider, model, inputTokens, outputTokens, cachedTokens);
+
+  /// "OpenAI · 412 tokens · $0.00008 · 0.6 s"
+  String get usageLine {
+    final c = cost;
+    final money = c == null ? '' : ' · ${c.currency == 'USD' ? '\$' : '₹'}${c.amount < 0.01 ? c.amount.toStringAsFixed(5) : c.amount.toStringAsFixed(3)}';
+    return '${provider == 'openai' ? 'OpenAI' : 'Sarvam'} · $totalTokens tokens$money · ${(latencyMs / 1000).toStringAsFixed(1)} s';
+  }
+}
+
+/// Published per-1M-token prices used to show what each request costs.
+class Pricing {
+  static const _table = <String, (double input, double cached, double output, String currency)>{
+    'gpt-4o-mini': (0.15, 0.075, 0.60, 'USD'),
+    'gpt-4.1-mini': (0.40, 0.10, 1.60, 'USD'),
+    'gpt-5-nano': (0.05, 0.005, 0.40, 'USD'),
+    'gpt-5-mini': (0.25, 0.025, 2.00, 'USD'),
+    'sarvam-105b-conversations': (10, 0.25, 25, 'INR'),
+    'sarvam-105b': (10, 0.25, 25, 'INR'),
+  };
+
+  static ({double amount, String currency})? cost(String provider, String model, int? input, int? output, int? cached) {
+    final p = _table[model];
+    if (p == null || input == null) return null;
+    final c = (cached ?? 0).clamp(0, input);
+    final amount = ((input - c) * p.$1 + c * p.$2 + (output ?? 0) * p.$3) / 1e6;
+    return (amount: amount, currency: p.$4);
+  }
 }
 
 /// Uses Sarvam's chat model to understand what the user meant (Indian English, Hindi/Kannada mix,
@@ -35,8 +89,9 @@ class SarvamBrain {
   static const systemPrompt = '''
 You are the understanding layer of LEO, a voice assistant that controls an Android phone in India.
 The user speaks Indian English, sometimes mixed with Hindi or Kannada, sometimes rambling.
-Rewrite what they want into SHORT commands that LEO understands. Reply with JSON only:
-{"commands": ["..."], "answer": "...", "clarify": "..."}  (omit fields you don't need)
+Rewrite what they want into SHORT commands that LEO understands. Reply with compact JSON only, using ONE of:
+{"commands": ["..."]}   or   {"answer": "..."}   or   {"clarify": "..."}
+Never add "answer" next to "commands" (LEO reports results itself). No extra keys, no empty strings.
 
 Command phrasings LEO understands (use these exact shapes, in English):
 - open <app>                         e.g. open ChatGPT, open YouTube
@@ -68,6 +123,7 @@ Rules:
 - A question or chit-chat that needs no phone action → put a short, friendly spoken answer (max 2 sentences, Indian English, address the user as "sir") in "answer" and no commands.
 - If you really can't tell what they want, ask ONE short question in "clarify".
 - Never invent recipients, amounts or messages. Never add payments or deletions the user didn't ask for.
+- Tokens like <PHONE_1>, <EMAIL_1>, <OTP_1> are private values hidden by the phone: copy them unchanged where needed.
 ''';
 
   Future<Interpretation?> interpret({
@@ -89,6 +145,7 @@ Rules:
       'max_tokens': 400,
       'response_format': {'type': 'json_object'},
     };
+    final sw = Stopwatch()..start();
     final http.Response res;
     try {
       res = await _client
@@ -106,11 +163,17 @@ Rules:
     final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     final content = (((j['choices'] as List?)?.firstOrNull as Map?)?['message'] as Map?)?['content'] as String? ?? '';
     final usage = j['usage'] as Map?;
-    return parse(content, inputTokens: usage?['prompt_tokens'] as int?, outputTokens: usage?['completion_tokens'] as int?);
+    return parse(content,
+        inputTokens: usage?['prompt_tokens'] as int?,
+        outputTokens: usage?['completion_tokens'] as int?,
+        cachedTokens: (usage?['prompt_tokens_details'] as Map?)?['cached_tokens'] as int?,
+        provider: 'sarvam',
+        model: model).copyWith(latencyMs: sw.elapsedMilliseconds);
   }
 
   /// Tolerant JSON extraction (the model may wrap JSON in prose or code fences).
-  static Interpretation parse(String content, {int? inputTokens, int? outputTokens}) {
+  static Interpretation parse(String content,
+      {int? inputTokens, int? outputTokens, int? cachedTokens, String provider = '', String model = ''}) {
     final s = content.indexOf('{'), e = content.lastIndexOf('}');
     if (s < 0 || e <= s) return Interpretation(answer: content.trim().isEmpty ? null : content.trim());
     Map<String, dynamic> m;
@@ -127,7 +190,14 @@ Rules:
         .take(4) // never a long chain
         .toList();
     return Interpretation(
-        commands: cmds, answer: str(m['answer']), clarify: str(m['clarify']), inputTokens: inputTokens, outputTokens: outputTokens);
+        commands: cmds,
+        answer: str(m['answer']),
+        clarify: str(m['clarify']),
+        inputTokens: inputTokens,
+        outputTokens: outputTokens,
+        cachedTokens: cachedTokens,
+        provider: provider,
+        model: model);
   }
 
   static String? _err(String body) {

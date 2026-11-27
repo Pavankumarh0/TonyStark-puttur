@@ -1,3 +1,5 @@
+import '../ai/openai_brain.dart';
+import '../core/privacy_filter.dart';
 import '../ai/sarvam_brain.dart';
 import 'dart:async';
 
@@ -62,6 +64,7 @@ class JarvisOrchestrator extends ChangeNotifier {
   final ContextBuilder contextBuilder;
   final AiService ai;
   final SarvamBrain sarvamBrain = SarvamBrain();
+  final OpenAiBrain openAiBrain = OpenAiBrain();
   final MicEngine mic;
   final SpeechInput speechIn;
   final SpeechOutput speechOut;
@@ -3025,49 +3028,98 @@ class JarvisOrchestrator extends ChangeNotifier {
   }
 
   // ------------------------------------------------------------------ speaking & storage
-  // ------------------------------------------------------------------ Sarvam understanding
-  bool get _sarvamReady => settings.sarvamUnderstanding && settings.hasSecret(SecretKey.sarvam);
+  // ------------------------------------------------------------------ cloud understanding (OpenAI / Sarvam)
+  /// OpenAI when chosen (or "auto" with a key), else Sarvam. null = no cloud understanding available.
+  String? get _cloudProvider {
+    if (!settings.sarvamUnderstanding) return null;
+    final hasOpenAi = settings.hasSecret(SecretKey.openai), hasSarvam = settings.hasSecret(SecretKey.sarvam);
+    return switch (settings.understandingProvider) {
+      'openai' => hasOpenAi ? 'openai' : (hasSarvam ? 'sarvam' : null),
+      'sarvam' => hasSarvam ? 'sarvam' : null,
+      _ => hasOpenAi ? 'openai' : (hasSarvam ? 'sarvam' : null),
+    };
+  }
 
-  /// Sends what the user said (plus the app on screen and recent turns) to Sarvam, which rewrites it
-  /// into plain LEO commands / a short answer / a clarifying question. Returns false to fall back.
+  bool get _sarvamReady => _cloudProvider != null;
+
+  /// Sends what the user said (personal data masked, plus the NAME of the app on screen and a few
+  /// recent turns) to the cloud model, which rewrites it into plain LEO commands / a short answer /
+  /// a clarifying question. Every call is written to the privacy ledger. Returns false to fall back.
   Future<bool> _understandWithSarvam(String raw, String source) async {
-    final key = settings.secret(SecretKey.sarvam) ?? '';
+    final provider = _cloudProvider;
+    if (provider == null) return false;
     String? screenApp;
     try {
       if (!await device.uiVisible() || assistMode) {
         final d = await device.screenDump(max: 4, skipOwn: true);
         final pkg = d['package'] as String?;
-        if (pkg != null) screenApp = (await apps.apps()).where((x) => x.packageName == pkg).map((x) => x.label).firstOrNull ?? pkg;
+        // Only the app's name is shared — never what's on the screen; nothing at all for banking/payment apps.
+        if (pkg != null && !await device.isBlockedApp(pkg)) {
+          screenApp = (await apps.apps()).where((x) => x.packageName == pkg).map((x) => x.label).firstOrNull;
+        }
       }
     } catch (_) {}
     final recent = [
-      for (final m in messages.length > 6 ? messages.sublist(messages.length - 6) : messages)
-        '${m.role == 'user' ? 'User' : 'LEO'}: ${m.text.length > 160 ? m.text.substring(0, 160) : m.text}'
+      for (final m in messages.length > 4 ? messages.sublist(messages.length - 4) : messages)
+        '${m.role == 'user' ? 'User' : 'LEO'}: ${m.text.length > 120 ? m.text.substring(0, 120) : m.text}'
     ];
+    // Mask personal identifiers in ONE pass so the same value gets the same placeholder everywhere.
+    const sep = '\n<<<NOW>>>\n';
+    final red = PrivacyFilter.redact('${recent.join('\n')}$sep$raw');
+    final parts = red.text.split(sep);
+    final safeRecent = parts.first.isEmpty ? <String>[] : parts.first.split('\n');
+    final safeUtterance = parts.length > 1 ? parts.last : red.text;
+
     Interpretation? r;
-    var ok = false;
+    String? error;
     try {
-      r = await sarvamBrain.interpret(apiKey: key, utterance: raw, screenApp: screenApp, recentTurns: recent);
-      ok = r != null;
+      r = provider == 'openai'
+          ? await openAiBrain.interpret(
+              apiKey: settings.secret(SecretKey.openai)!, model: settings.openAiModel,
+              utterance: safeUtterance, screenApp: screenApp, recentTurns: safeRecent)
+          : await sarvamBrain.interpret(
+              apiKey: settings.secret(SecretKey.sarvam)!, utterance: safeUtterance, screenApp: screenApp, recentTurns: safeRecent);
     } catch (e) {
-      debugPrint('LEO sarvam-understand failed: $e');
-    } finally {
-      unawaited(memory.logTokenUsage(
-          provider: 'sarvam', model: SarvamBrain.model, purpose: 'understand',
-          input: r?.inputTokens, output: r?.outputTokens,
-          total: r == null ? null : (r.inputTokens ?? 0) + (r.outputTokens ?? 0), reported: r?.inputTokens != null, ok: ok));
+      error = '$e';
+      debugPrint('LEO cloud-understand ($provider) failed: $e');
     }
+    final model = provider == 'openai' ? settings.openAiModel : SarvamBrain.model;
+    final cost = r?.cost;
+    unawaited(memory.logCloud(
+        provider: provider, model: model, purpose: 'understand',
+        sentText: '${screenApp == null ? '' : '[app: $screenApp] '}$safeUtterance', maskedCount: red.count,
+        input: r?.inputTokens, output: r?.outputTokens, cached: r?.cachedTokens,
+        cost: cost?.amount, currency: cost?.currency, latencyMs: r?.latencyMs, ok: r != null && error == null));
+    unawaited(memory.logTokenUsage(
+        provider: provider, model: model, purpose: 'understand',
+        input: r?.inputTokens, output: r?.outputTokens, total: r?.totalTokens, reported: r?.inputTokens != null, ok: r != null));
     if (r == null || r.isEmpty) return false;
-    debugPrint('LEO sarvam-understand: "$raw" → ${r.commands} answer=${r.answer != null} clarify=${r.clarify}');
-    await _store('user', raw, source: source, kind: 'conversation', route: 'sarvam');
-    if (r.commands.isEmpty) {
-      await _say(r.clarify ?? r.answer!, route: 'sarvam', kind: r.clarify != null ? 'question' : 'answer');
+    // Put the masked values back — on the phone, never in the cloud.
+    final res = r.copyWith(
+      commands: [for (final c in r.commands) red.restore(c)],
+      answer: r.answer == null ? null : red.restore(r.answer!),
+      clarify: r.clarify == null ? null : red.restore(r.clarify!),
+    );
+    debugPrint('LEO cloud-understand ($provider): ${res.commands} answer=${res.answer != null} · ${res.usageLine}');
+    await _store('user', raw, source: source, kind: 'conversation', route: provider);
+    if (res.commands.isEmpty) {
+      await _say(res.clarify ?? res.answer!, route: provider, kind: res.clarify != null ? 'question' : 'answer',
+          extraStoredText: '\n· ${res.usageLine}');
       return true;
     }
     // Run the commands in order through the normal engine (all rules & approvals apply). The first
     // starts now; the rest wait for each task to finish, so the voice loop stays free for answers.
-    await handleInput(r.commands.first, source: 'sarvam');
-    if (r.commands.length > 1) unawaited(_runCommandChain(r.commands.sublist(1)));
+    await handleInput(res.commands.first, source: 'sarvam');
+    final t = _tracker;
+    if (t != null && t.snapshot.state.isActive) {
+      t.addStep(TaskStep(
+          id: 'cloud',
+          description: 'Understood by ${provider == 'openai' ? 'OpenAI' : 'Sarvam'}'
+              '${res.commands.length > 1 ? ' (${res.commands.length} steps)' : ''}',
+          status: StepStatus.done,
+          detail: '${res.usageLine}${red.count > 0 ? ' · ${red.count} private item${red.count == 1 ? '' : 's'} masked' : ''}'));
+    }
+    if (res.commands.length > 1) unawaited(_runCommandChain(res.commands.sublist(1)));
     return true;
   }
 

@@ -25,6 +25,14 @@ class JarvisApplication : Application() {
         /** The activity the shared engine is currently attached to (main app or assistant panel). */
         @Volatile var activeHost: android.app.Activity? = null
 
+        /** Applies "Hide LEO from screenshots & recording" (Flutter pref flutter.secure_screen) to [a]. */
+        fun applySecure(a: android.app.Activity, value: Boolean? = null) {
+            val on = value ?: a.getSharedPreferences("FlutterSharedPreferences", android.content.Context.MODE_PRIVATE)
+                .getBoolean("flutter.secure_screen", false)
+            if (on) a.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+            else a.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        }
+
         /** How many LEO screens (main app / assistant panel) are on screen right now. */
         @Volatile var visibleScreens = 0
     }

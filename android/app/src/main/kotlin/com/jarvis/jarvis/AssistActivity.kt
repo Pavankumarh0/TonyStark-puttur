@@ -28,6 +28,7 @@ class AssistActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         JarvisApplication.visibleScreens++
+        JarvisApplication.applySecure(this)
         DeviceChannel.emit(mapOf("type" to "assist", "on" to true))
     }
 
