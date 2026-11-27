@@ -19,7 +19,6 @@ import android.os.Build
  * so the mic hears you, and resumes automatically afterwards — unless you told LEO to pause it.
  */
 object MediaBridge {
-    private var focusRequest: AudioFocusRequest? = null
     @Volatile var playingBeforeListen = false
     @Volatile private var pausedByUserDuringListen = false
 
@@ -68,29 +67,42 @@ object MediaBridge {
     )
 
     // ------------------------------------------------------------------ listening focus
+    // While LEO listens, music is turned DOWN (not paused) so you can keep talking over it,
+    // then restored. If you change the volume yourself meanwhile, your change is kept.
+    @Volatile private var duckedFrom = -1
+    @Volatile private var duckedTo = -1
+
     fun beginListening(ctx: Context) {
-        if (focusRequest != null) return
+        if (duckedFrom >= 0) return
         val am = am(ctx)
         playingBeforeListen = am.isMusicActive || (target(ctx)?.let { isPlaying(it) } ?: false)
         pausedByUserDuringListen = false
-        if (Build.VERSION.SDK_INT >= 26) {
-            val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-                .setAudioAttributes(AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-                .setOnAudioFocusChangeListener { }
-                .build()
-            am.requestAudioFocus(req)
-            focusRequest = req
-        }
+        if (!playingBeforeListen) return
+        val vol = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val low = maxOf(1, minOf(vol, (max * 0.2).toInt().coerceAtLeast(vol / 5)))
+        if (low >= vol) return
+        duckedFrom = vol; duckedTo = low
+        Thread {
+            // short fade so it doesn't feel like a cut
+            var v = vol
+            while (v > low) { v = maxOf(low, v - maxOf(1, (vol - low) / 4)); try { am.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0) } catch (_: Exception) {}; Thread.sleep(40) }
+        }.start()
     }
 
     fun endListening(ctx: Context) {
-        val req = focusRequest ?: return
-        focusRequest = null
-        if (Build.VERSION.SDK_INT >= 26) am(ctx).abandonAudioFocusRequest(req)
-        // The playing app resumes by itself after transient focus loss, unless the user paused it.
         playingBeforeListen = false
+        val from = duckedFrom; val to = duckedTo
+        if (from < 0) return
+        duckedFrom = -1; duckedTo = -1
+        val am = am(ctx)
+        Thread {
+            Thread.sleep(120)
+            val now = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            if (now != to) return@Thread // user changed it — respect that
+            var v = now
+            while (v < from) { v = minOf(from, v + maxOf(1, (from - to) / 4)); try { am.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0) } catch (_: Exception) {}; Thread.sleep(60) }
+        }.start()
     }
 
     // ------------------------------------------------------------------ commands
@@ -99,7 +111,7 @@ object MediaBridge {
         val c = target(ctx)
         if (c == null) return mapOf("status" to fallbackKey(ctx, action))
         val tc = c.transportControls
-        val playingNow = isPlaying(c) || (focusRequest != null && playingBeforeListen)
+        val playingNow = isPlaying(c)
         val status = when (action) {
             "pause" -> {
                 if (!playingNow) "not_playing" else {
@@ -111,7 +123,7 @@ object MediaBridge {
                 }
             }
             "play" -> {
-                if (isPlaying(c) || (focusRequest != null && playingBeforeListen)) "already_playing" else {
+                if (isPlaying(c)) "already_playing" else {
                     endListening(ctx) // give focus back so the player can actually start
                     tc.play()
                     Thread.sleep(900)

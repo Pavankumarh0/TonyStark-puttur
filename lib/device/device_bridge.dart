@@ -124,9 +124,9 @@ class DeviceBridge {
   Future<bool> notificationAccess() async => await _ch.invokeMethod<bool>('notificationAccess') ?? false;
   Future<void> openNotificationAccessSettings() => _ch.invokeMethod('openNotificationAccessSettings');
 
-  Future<List<NotificationItem>> readNotifications({bool whatsapp = true, bool email = true}) async {
+  Future<List<NotificationItem>> readNotifications({bool whatsapp = true, bool email = true, bool sms = false}) async {
     final list = await _ch.invokeListMethod<Map>('readNotifications', {
-          'kinds': [if (whatsapp) 'whatsapp', if (email) 'email']
+          'kinds': [if (whatsapp) 'whatsapp', if (email) 'email', if (sms) 'sms']
         }) ??
         [];
     return [for (final m in list) NotificationItem.fromMap(m)];
@@ -203,6 +203,10 @@ class DeviceBridge {
       await _ch.invokeMapMethod<String, dynamic>('notificationReply', {'key': key, 'text': text}) ?? const {'ok': false};
 
   // ---- alarms / reminders / calls / files (local)
+  /// Opens the Clock alarm list and flips matching alarm switches off (accessibility). hour is 0..23.
+  Future<Map<String, dynamic>> clockSwitchOff({int? hour, int? minute, bool ampmKnown = false, bool all = false}) =>
+      _act('clockSwitchOff', {'hour': hour, 'minute': minute, 'ampmKnown': ampmKnown, 'all': all});
+
   Future<Map<String, dynamic>> dismissAlarm({String mode = 'next', int? hour, int? minute, String? label}) =>
       _act('dismissAlarm', {'mode': mode, 'hour': hour, 'minute': minute, 'label': label});
   Future<Map<String, dynamic>> snoozeAlarm({int? minutes}) => _act('snoozeAlarm', {'minutes': minutes});

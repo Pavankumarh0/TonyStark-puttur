@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:jarvis/core/intent/local_intent.dart';
 import 'package:jarvis/core/intent/local_intent_engine.dart';
 import 'package:jarvis/orchestrator/jarvis_orchestrator.dart';
+import 'package:jarvis/ai/local_agent_brain.dart';
 
 void main() {
   final e = LocalIntentEngine();
@@ -47,6 +48,16 @@ void main() {
     test('open flipkart.com', () => expect((e.parse('open flipkart.com') as OpenWebsiteIntent).site, 'flipkart.com'));
     test('go to wikipedia website', () => expect((e.parse('go to wikipedia website') as OpenWebsiteIntent).site, 'wikipedia website'));
     test('open github.com and search for flutter', () => expect((e.parse('open github.com and search for flutter') as OpenWebsiteIntent).then, 'search for flutter'));
+    test('search for bengaluru on wikipedia', () {
+      final i = e.parse('search for bengaluru on wikipedia') as OpenWebsiteIntent;
+      expect(i.site, 'wikipedia');
+      expect(i.then, 'search for bengaluru');
+    });
+    test('plain web search unchanged', () => expect(e.parse('search for best biryani near me'), isA<WebSearchIntent>()));
+    test('site search urls', () {
+      expect(JarvisOrchestrator.siteSearchUrl('wikipedia.org', 'bengaluru'), 'https://en.wikipedia.org/w/index.php?search=bengaluru');
+      expect(JarvisOrchestrator.siteSearchUrl('example.org', 'x y'), contains('site%3Aexample.org'));
+    });
   });
 
   group('10 · reminders', () {
@@ -79,6 +90,20 @@ void main() {
       expect(p.first.price, 1099);
       expect(p.last.short, 'Noise Buds VS104 Truly Wireless Earbuds');
     });
+    test('price parser skips filter chips and list prices', () {
+      final p = JarvisOrchestrator.parseProducts([
+        'ANC vs transparency mode for calls',
+        'Best wireless earbuds for iPhone users',
+        'Noise Buds Mini X Truly Wireless Earbuds',
+        '3.9',
+        '-67%',
+        '₹999',
+        '₹2,999.00',
+        'Realme Buds T110 with AI ENC for calls',
+        '₹1,299',
+      ]);
+      expect(p.map((x) => x.price), [999, 1299]);
+    });
   });
 
   group('12 · meetings', () {
@@ -94,5 +119,54 @@ void main() {
     test('scroll down', () => expect((e.parse('scroll down') as ScreenCommandIntent).command, ScreenCommand.scrollDown));
     test('tap archive', () => expect((e.parse('tap archive') as ScreenCommandIntent).arg, 'archive'));
     test('go back', () => expect((e.parse('go back') as ScreenCommandIntent).command, ScreenCommand.back));
+  });
+
+  group('Natural phrasing', () {
+    test('uh, can you … ? is still a phone task', () =>
+        expect(e.parse('uh, can you open Instagram and send a reel to Pawan Kumar?'), isA<PhoneTaskIntent>()));
+    test('so, um... play kesariya on spotify', () => expect(e.parse('so, play kesariya on spotify'), isA<PlayMediaIntent>()));
+    test('questions still go to knowledge', () => expect(e.parse('what is the capital of France?'), isNot(isA<PhoneTaskIntent>())));
+  });
+
+  test('name spelling variants', () {
+    expect(JarvisOrchestrator.spellingVariants('Pawan'), contains('pavan'));
+    expect(JarvisOrchestrator.spellingVariants('Sreya'), contains('shreya'));
+  });
+
+  group('Login', () {
+    test('log in to spotify with my phone number', () {
+      final i = e.parse('log in to spotify with my phone number') as SignInIntent;
+      expect(i.appName, 'spotify');
+      expect(i.method, 'phone');
+    });
+    test('sign into instagram using google', () => expect((e.parse('sign into instagram using google') as SignInIntent).method, 'google'));
+    test('login to spotify', () => expect((e.parse('login to spotify') as SignInIntent).method, isNull));
+    test('otp from sms', () {
+      expect(JarvisOrchestrator.extractOtp('482913 is your Spotify verification code. Do not share it.'), '482913');
+      expect(JarvisOrchestrator.extractOtp('Your OTP for login is 5521. Valid for 10 mins'), '5521');
+      expect(JarvisOrchestrator.extractOtp('Rs 1200 debited from a/c 4455'), isNull);
+    });
+  });
+
+  group('Screen questions', () {
+    test('One-Step Login sheet is a question', () {
+      const screen = '[0] text "One-Step Login" ()\n'
+          '[1] text "Activate One-Step Login for Spotify across all of your Samsung devices" ()\n'
+          '[2] button "Activate" (tap)\n'
+          '[3] button "Not now" (tap)';
+      final q = LocalAgentBrain.detectQuestion(screen)!;
+      expect(q.buttons.map((b) => b.label), ['Activate', 'Not now']);
+      expect(q.question, contains('One-Step Login'));
+    });
+    test('permission prompt', () {
+      const screen = '[0] text "Allow Instagram to access photos and videos?" ()\n'
+          '[1] button "Allow" (tap)\n[2] button "Don\'t allow" (tap)';
+      expect(LocalAgentBrain.detectQuestion(screen)!.buttons.length, 2);
+    });
+    test('normal page is not a question', () {
+      const screen = '[0] input "Search" (tap,input)\n[1] button "Home" (tap)\n[2] text "Recently played" ()\n'
+          '[3] button "Kesariya" (tap)\n[4] button "Library" (tap)';
+      expect(LocalAgentBrain.detectQuestion(screen), isNull);
+    });
   });
 }

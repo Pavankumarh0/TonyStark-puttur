@@ -127,3 +127,13 @@ class AppResolver {
     return prev[b.length];
   }
 }
+
+class AppResolverHelpers {
+  /// True when an installed label really is the app asked for ("Spotify" for "spotify", not "Spotify Lite" for "lite").
+  static bool closeName(String label, String asked) {
+    String n(String s) => s.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+    final l = n(label), a = n(asked.replaceAll(RegExp(r'\b(app|application)\b', caseSensitive: false), ''));
+    if (a.isEmpty) return false;
+    return l == a || (l.startsWith(a) && a.length >= l.length * 0.6);
+  }
+}

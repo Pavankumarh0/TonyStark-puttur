@@ -138,7 +138,7 @@ class _PermissionsScreenState extends State<PermissionsScreen> with WidgetsBindi
             ),
             _tile(
               'Accessibility service',
-              'Lets LEO tap Send in WhatsApp (only after you approve the exact message) and start the YouTube video you asked for. Limited to WhatsApp and YouTube.',
+              'Lets LEO see and tap the app on screen when you ask it to do something (open, search, tap, scroll, switch off an alarm). Anything that sends, deletes, installs or pays waits for your approval. Banking and payment apps are never touched.',
               _a11y,
               d.openAccessibilitySettings,
               extra: const _A11yHelp(),

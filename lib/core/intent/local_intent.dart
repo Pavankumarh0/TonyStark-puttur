@@ -199,7 +199,9 @@ class MediaControlIntent extends LocalIntent {
 /// "Sign in to YouTube Music" — opens the app and walks through sign-in with the user's consent.
 class SignInIntent extends LocalIntent {
   final String appName;
-  const SignInIntent(this.appName);
+  /// 'google' | 'phone' | 'email' when the user said how ("with my phone number").
+  final String? method;
+  const SignInIntent(this.appName, {this.method});
 }
 
 // ---- Everyday phone actions (local, no AI)

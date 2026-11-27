@@ -23,8 +23,8 @@ class IntentContext {
 /// [UnknownIntent], [KnowledgeIntent] and [WriteIntent] ever reach Gemini.
 class LocalIntentEngine {
   static final _leadingFiller = RegExp(
-    r"^((hey|ok|okay|hi|yo)\s+)?((?:jarvis|leo)[\s,.!:]*)?"
-    r"((please|kindly|can you|could you|would you|will you|i want you to|i need you to|i'd like you to)\s+)*",
+    r"^((?:uh+|um+|hmm+|so|well|and|okay so|ok so)[\s,.]+)?((hey|ok|okay|hi|yo)[\s,]+)?((?:jarvis|leo)[\s,.!:]*)?"
+    r"((please|kindly|can you|could you|would you|will you|can u|could u|i want you to|i need you to|i'd like you to)[\s,]+)*",
     caseSensitive: false,
   );
 
@@ -39,6 +39,10 @@ class LocalIntentEngine {
       t = t.substring(m.end).trimLeft();
     }
     t = t.replaceAll(RegExp(r'\s+please[.!?]*$', caseSensitive: false), '');
+    // "…send a reel to Pawan Kumar?" is still a command — but keep punctuation of dictated messages.
+    if (!RegExp(r"\b(saying|say|that|message|text|tell|reply|write|ask)\b", caseSensitive: false).hasMatch(t)) {
+      t = t.replaceAll(RegExp(r'\s*\?+$'), '');
+    }
     return t.trim();
   }
 
@@ -58,10 +62,22 @@ class LocalIntentEngine {
     final media = _mediaControl(n);
     if (media != null) return media;
 
-    final signIn = RegExp(r"^(?:sign|log)\s*(?:in|into|on)(?:\s+(?:to|into|on))?\s+(?:my\s+)?(.+?)(?:\s+(?:app|account))?$",
+    // "log in to spotify with my phone number" / "sign into instagram using google"
+    final how = RegExp(r"\s+(?:with|using|via|through|by)\s+(?:my\s+|a\s+)?(phone(?: number)?|mobile(?: number)?|number|google(?: account)?|gmail|e-?mail(?: address)?)$",
             caseSensitive: false)
         .firstMatch(text);
-    if (signIn != null && signIn.group(1)!.split(' ').length <= 4) return SignInIntent(signIn.group(1)!.trim());
+    final method = how == null
+        ? null
+        : RegExp(r'phone|mobile|number', caseSensitive: false).hasMatch(how.group(1)!)
+            ? 'phone'
+            : RegExp(r'google|gmail', caseSensitive: false).hasMatch(how.group(1)!)
+                ? 'google'
+                : 'email';
+    final signText = how == null ? text : text.substring(0, how.start);
+    final signIn = RegExp(r"^(?:sign|log)\s*(?:in|into|on)(?:\s+(?:to|into|on))?\s+(?:my\s+)?(.+?)(?:\s+(?:app|account))?$",
+            caseSensitive: false)
+        .firstMatch(signText);
+    if (signIn != null && signIn.group(1)!.split(' ').length <= 4) return SignInIntent(signIn.group(1)!.trim(), method: method);
 
     final early = _early(text, n);
     if (early != null) return early;
@@ -285,6 +301,10 @@ class LocalIntentEngine {
     final web = RegExp(r"^(?:open|go to|visit|browse|load|show me)\s+(?:the\s+)?(?:website\s+|site\s+)?((?:https?://)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/\S*)?|[a-z0-9 ]+?\s+(?:website|site|dot com))(?:\s+and\s+(.+))?$", caseSensitive: false)
         .firstMatch(text);
     if (web != null) return OpenWebsiteIntent(web.group(1)!.trim(), then: web.group(2)?.trim());
+    // "search for X on wikipedia / github.com" → that site's own search
+    final onSite = RegExp(r"^(?:search|look up|find|look for)(?:\s+(?:for|about))?\s+(.+?)\s+(?:on|in)\s+((?:[a-z0-9-]+\.)+[a-z]{2,}|wikipedia|github|reddit|stack ?overflow|imdb|quora|linkedin|twitter|myntra|swiggy|zomato)$", caseSensitive: false)
+        .firstMatch(text);
+    if (onSite != null) return OpenWebsiteIntent(onSite.group(2)!.replaceAll(' ', '').toLowerCase(), then: 'search for ${onSite.group(1)!.trim()}');
     // Shopping
     final shop = RegExp(r"^(?:search for|search|find|look for|buy|order|shop for|compare|show me|add)\s+(.+?)\s+(?:(?:to (?:my |the )?cart )?(?:on|in|from|at)\s+)(amazon|flipkart)(?:\s+and\s+(.+))?$", caseSensitive: false)
         .firstMatch(text);
@@ -361,7 +381,8 @@ class LocalIntentEngine {
     if (nav != null) return NavigateIntent(nav.group(1)!.replaceAll(RegExp(r'[.!?]+$'), '').trim());
     // Web search
     final ws = RegExp(r"^(?:search google|search the web|search online|search on google|google search|look up|search|google)(?: on google| on the web| online)?(?: for| about)?\s+(.+)$", caseSensitive: false).firstMatch(text);
-    if (ws != null && !RegExp(r"\b(youtube|amazon|flipkart)\b", caseSensitive: false).hasMatch(text)) return WebSearchIntent(ws.group(1)!.trim());
+    final namesSite = RegExp(r"\s(?:on|in)\s+(?:(?:[a-z0-9-]+\.)+[a-z]{2,}|wikipedia|github|reddit|stack ?overflow|imdb|quora|linkedin|twitter|myntra|swiggy|zomato)$", caseSensitive: false).hasMatch(text);
+    if (ws != null && !namesSite && !RegExp(r"\b(youtube|amazon|flipkart)\b", caseSensitive: false).hasMatch(text)) return WebSearchIntent(ws.group(1)!.trim());
     // Flashlight
     final fl = RegExp(r"^(?:turn|switch|put)\s+(on|off)\s+(?:the\s+)?(?:flashlight|torch|flash ?light|flash)$|^(?:turn|switch)\s+(?:the\s+)?(?:flashlight|torch|flash)\s+(on|off)$|^(?:flashlight|torch)\s+(on|off)$")
         .firstMatch(n);

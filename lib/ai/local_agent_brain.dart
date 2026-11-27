@@ -45,6 +45,39 @@ class LocalAgentBrain {
     return (index: int.parse(m.group(1)!), kind: m.group(2)!, label: m.group(3)!, flags: m.group(4)!.split(',').where((f) => f.isNotEmpty).toList());
   }
 
+  static final _dialogButton = RegExp(
+      r"^(allow|don'?t allow|deny|while using the app|only this time|activate|not now|accept|accept all|decline|reject all|agree|i agree|disagree|ok|okay|cancel|skip|later|maybe later|no thanks|no,? thanks|update|update now|got it|continue|close|dismiss|turn on|enable|remind me later|try premium|start free trial|sign in|log in|sign up|continue with google|continue with phone|use phone number|yes|no)$",
+      caseSensitive: false);
+
+  /// A popup / question the app is showing that the user should decide on (permission prompts,
+  /// "One-Step Login", cookie banners, update nags, sign-in walls). Returns the question and the
+  /// buttons to offer, or null when the screen looks like normal content.
+  static ({String question, List<({int index, String label})> buttons})? detectQuestion(String screen) {
+    final els = screen.split('\n').map(_parseLine).whereType<({int index, String kind, String label, List<String> flags})>().toList();
+    final buttons = <({int index, String label})>[];
+    for (final e in els) {
+      final label = e.label.split(' | ').first.trim();
+      if (e.flags.contains('tap') && label.length <= 30 && _dialogButton.hasMatch(label)) {
+        if (!buttons.any((b) => b.label.toLowerCase() == label.toLowerCase())) buttons.add((index: e.index, label: label));
+      }
+    }
+    if (buttons.length < 2) return null; // a single "OK"/"Continue" is usually part of normal flow
+    // Dialog buttons sit together; two matches far apart on a page are just normal controls.
+    final close = buttons.where((b) => (b.index - buttons.first.index).abs() <= 6).toList();
+    if (close.length < 2) return null;
+    buttons
+      ..clear()
+      ..addAll(close);
+    // A pair like Allow/Deny, Activate/Not now, Accept/Decline, Update/Later = a question.
+    final first = buttons.first.index;
+    final text = els
+        .where((e) => !e.flags.contains('tap') && !e.flags.contains('input') && e.label.trim().length > 6 && e.index < first + 3)
+        .map((e) => e.label.split(' | ').first.trim())
+        .toList();
+    final q = text.isEmpty ? 'The app is asking you to choose' : text.take(2).join('. ');
+    return (question: q.length > 220 ? '${q.substring(0, 220)}…' : q, buttons: buttons.take(4).toList());
+  }
+
   static bool _did(List<String> history, String type) =>
       history.any((h) => RegExp('^\\d+\\. $type\\b').hasMatch(h) && h.contains('→ ok'));
 
@@ -57,7 +90,8 @@ class LocalAgentBrain {
     final els = screen.split('\n').map(_parseLine).whereType<({int index, String kind, String label, List<String> flags})>().toList();
 
     // ---- Rule 1: open the app named in the goal (once).
-    if (!_did(history, 'open_app')) {
+    // (Not for installs: the app named there is the one to get from the Play Store.)
+    if (!_did(history, 'open_app') && !RegExp(r'^(install|download)\b', caseSensitive: false).hasMatch(goal.trim())) {
       final installed = await apps.apps();
       final g = ' ${_words(goal).join(' ')} ';
       final named = installed.where((a) {

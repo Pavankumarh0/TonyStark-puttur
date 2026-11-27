@@ -43,6 +43,82 @@ object PhoneExtras {
         }
     }
 
+    /**
+     * Samsung (and some other) Clock apps ignore DISMISS for alarms that aren't ringing and just show a list.
+     * So: open the alarm list ourselves and flip the matching switches off via accessibility.
+     * hour = 0..23; ampmKnown=false matches both 6:30 am and 6:30 pm. Runs off the main thread.
+     */
+    fun clockSwitchOff(ctx: Context, hour: Int?, minute: Int?, ampmKnown: Boolean, all: Boolean): Map<String, Any?> {
+        val s = JarvisAccessibilityService.instance ?: return mapOf("ok" to false, "status" to "accessibility_off")
+        try {
+            ctx.startActivity(Intent(AlarmClock.ACTION_SHOW_ALARMS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) { return mapOf("ok" to false, "status" to "no_clock_app") }
+        val timeRx: Regex? = if (all || hour == null) null else {
+            val mm = "%02d".format(minute ?: 0)
+            val h12 = if (hour % 12 == 0) 12 else hour % 12
+            val ap = if (hour >= 12) "p" else "a"
+            if (ampmKnown) Regex("""(^|\D)0?$h12[:.]$mm\s*$ap\.?\s*m\b|(^|\D)0?$hour[:.]$mm(?!\s*[ap]\.?\s*m)""", RegexOption.IGNORE_CASE)
+            else Regex("""(^|\D)0?$h12[:.]$mm\b|(^|\D)${(h12 + 12) % 24}[:.]$mm\b""", RegexOption.IGNORE_CASE)
+        }
+        // Wait for the clock list to be in front.
+        var root: android.view.accessibility.AccessibilityNodeInfo? = null
+        for (i in 0 until 20) {
+            Thread.sleep(250)
+            val r = s.rootInActiveWindow
+            val pkg = r?.packageName?.toString() ?: ""
+            if (r != null && pkg != ctx.packageName && (pkg.contains("clock") || pkg.contains("alarm"))) { root = r; break }
+        }
+        if (root == null) return mapOf("ok" to false, "status" to "clock_not_shown")
+        val pkg = root.packageName.toString()
+        fun label(n: android.view.accessibility.AccessibilityNodeInfo): String {
+            val own = listOfNotNull(n.contentDescription?.toString(), n.text?.toString()).joinToString(" ")
+            if (own.contains(Regex("""\d[:.]\d\d"""))) return own
+            // The switch's row: walk up and collect the row text.
+            var p = n.parent
+            repeat(3) {
+                if (p == null) return own
+                val sb = StringBuilder()
+                fun walk(x: android.view.accessibility.AccessibilityNodeInfo, d: Int) {
+                    if (d > 4) return
+                    x.contentDescription?.let { sb.append(it).append(' ') }; x.text?.let { sb.append(it).append(' ') }
+                    for (k in 0 until x.childCount) x.getChild(k)?.let { walk(it, d + 1) }
+                }
+                walk(p!!, 0)
+                val t = sb.toString()
+                if (t.contains(Regex("""\d[:.]\d\d"""))) return t
+                p = p!!.parent
+            }
+            return own
+        }
+        val turnedOff = mutableListOf<String>(); val alreadyOff = mutableListOf<String>(); val seen = HashSet<String>()
+        for (page in 0 until 8) {
+            val r = s.rootInActiveWindow ?: break
+            if (r.packageName?.toString() != pkg) break
+            val switches = mutableListOf<android.view.accessibility.AccessibilityNodeInfo>()
+            fun collect(x: android.view.accessibility.AccessibilityNodeInfo) {
+                if (x.isCheckable && x.isVisibleToUser) switches.add(x)
+                for (k in 0 until x.childCount) x.getChild(k)?.let { collect(it) }
+            }
+            collect(r)
+            for (sw in switches) {
+                val l = label(sw).trim()
+                val key = Regex("""\d{1,2}[:.]\d\d\s*([ap]\.?\s*m)?""", RegexOption.IGNORE_CASE).find(l)?.value ?: continue
+                if (timeRx != null && !timeRx.containsMatchIn(l)) continue
+                if (!seen.add(l)) continue
+                if (!sw.isChecked) { alreadyOff.add(key); continue }
+                val target = if (sw.isClickable) sw else generateSequence(sw.parent) { it.parent }.firstOrNull { it.isClickable }
+                if (target?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK) == true) turnedOff.add(key)
+            }
+            if (timeRx != null && turnedOff.isNotEmpty()) break
+            val scroller = generateSequence(listOf(r)) { lvl -> lvl.flatMap { n -> (0 until n.childCount).mapNotNull { n.getChild(it) } }.ifEmpty { null } }
+                .flatten().take(400).firstOrNull { it.isScrollable }
+            if (scroller?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) != true) break
+            Thread.sleep(500)
+        }
+        Thread.sleep(400)
+        return mapOf("ok" to true, "status" to "done", "turnedOff" to turnedOff, "alreadyOff" to alreadyOff.distinct().filter { it !in turnedOff })
+    }
+
     fun snoozeAlarm(ctx: Context, minutes: Int?): Map<String, Any?> = try {
         ctx.startActivity(Intent(AlarmClock.ACTION_SNOOZE_ALARM).apply {
             if (minutes != null) putExtra(AlarmClock.EXTRA_ALARM_SNOOZE_DURATION, minutes)

@@ -171,7 +171,9 @@ object DeviceChannel {
             // ---------------- alarms / reminders / calls / files (local)
             "dismissAlarm" -> result.success(PhoneExtras.dismissAlarm(app, call.argument<String>("mode") ?: "next",
                 call.argument<Int>("hour"), call.argument<Int>("minute"), call.argument<String>("label")))
-            "snoozeAlarm" -> result.success(PhoneExtras.snoozeAlarm(app, call.argument<Int>("minutes")))
+            "clockSwitchOff" -> background(result) { PhoneExtras.clockSwitchOff(app, call.argument<Int>("hour"), call.argument<Int>("minute"),
+                call.argument<Boolean>("ampmKnown") == true, call.argument<Boolean>("all") == true) }
+            "snoozeAlarm" ->result.success(PhoneExtras.snoozeAlarm(app, call.argument<Int>("minutes")))
             "addReminder" -> result.success(PhoneExtras.addReminder(app, (call.argument<Number>("at")!!).toLong(), call.argument<String>("text")!!))
             "listReminders" -> result.success(PhoneExtras.listReminders(app))
             "deleteReminder" -> result.success(PhoneExtras.deleteReminder(app, call.argument<Int>("id")))
@@ -245,6 +247,7 @@ object DeviceChannel {
                 val pkgs = HashSet<String>()
                 if ("whatsapp" in kinds) pkgs += JarvisNotificationListener.WHATSAPP
                 if ("email" in kinds) pkgs += JarvisNotificationListener.EMAIL
+                if ("sms" in kinds) pkgs += setOf("com.samsung.android.messaging", "com.google.android.apps.messaging", "com.android.mms")
                 result.success(JarvisNotificationListener.read(pkgs))
             }
             // ---------------- assistant role / half-screen panel

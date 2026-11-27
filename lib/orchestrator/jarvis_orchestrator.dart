@@ -549,8 +549,8 @@ class JarvisOrchestrator extends ChangeNotifier {
         _startTask('Screen: ${command.name}${arg == null ? '' : ' "$arg"'}', 'screen_cmd', TaskRoute.local, {'cmd': command.name, 'arg': arg});
       case ReadChatIntent(:final who):
         _startTask('Read chat with $who', 'read_chat', TaskRoute.local, {'who': who});
-      case SignInIntent(:final appName):
-        _startTask('Sign in to $appName', 'sign_in', TaskRoute.local, {'query': appName});
+      case SignInIntent(:final appName, :final method):
+        _startTask('Sign in to $appName', 'sign_in', TaskRoute.local, {'query': appName, 'method': method});
       case CallIntent(:final name):
         _startTask('Call $name', 'call', TaskRoute.local, {'name': name});
       case CheckMessagesIntent(:final whatsapp, :final email):
@@ -1146,7 +1146,8 @@ class JarvisOrchestrator extends ChangeNotifier {
       tr.addStep(TaskStep(id: 'search', description: 'Search $appLabel for "$q"'));
       tr.addStep(const TaskStep(id: 'play', description: 'Start playback'));
     }
-    await _say('Looking up $q on $appLabel, ${settings.address}.', kind: 'command');
+    // Announce BEFORE the music starts so LEO never talks over the song.
+    await _say('Playing $q on $appLabel, ${settings.address}.', kind: 'command');
     _lastMediaQuery = q;
     _lastMediaAt = DateTime.now();
     // Let the music play: end this listening turn and release the mic's audio focus,
@@ -1168,13 +1169,23 @@ class JarvisOrchestrator extends ChangeNotifier {
       _lastMediaQuery = short;
       _lastMediaAt = DateTime.now();
       tr.updateStep('play', status: StepStatus.done, detail: title == null ? 'Playback confirmed' : 'Playing: $title');
-      await _say('Now playing $short.', kind: 'command'); // verified by the player's media session
+      // Already announced before playback; stay quiet over the music (shown on screen instead).
+      await _store('assistant', 'Now playing $short.', source: 'voice', kind: 'command', route: 'local');
       return title == null ? 'Playing' : 'Playing $title';
     }
     tr.updateStep('play', status: StepStatus.skipped, detail: r['reason'] as String?);
     const pkgs = {'youtube': 'com.google.android.youtube', 'youtube_music': 'com.google.android.apps.youtube.music', 'spotify': 'com.spotify.music'};
-    if (await _offerLogin(tr, pkgs[appKey]!, appLabel)) {
-      await _say('You\'re signed in, ${settings.address}. Say "play $q" again and I\'ll start it.', kind: 'command');
+    if (tr.snapshot.params['retried'] != true && await _offerLogin(tr, pkgs[appKey]!, appLabel)) {
+      // Signed in → carry straight on with the song.
+      tr.setParams({'retried': true});
+      await _say('Now let me play $q, ${settings.address}.', kind: 'command');
+      final r2 = await tr.control.guard(device.playMedia(appKey, q));
+      if (r2['status'] == 'playing') {
+        tr.updateStep('play', status: StepStatus.done, detail: 'Playing: ${r2['title'] ?? q}');
+        _lastMediaAt = DateTime.now();
+        return 'Playing ${r2['title'] ?? q}';
+      }
+      await _say('You\'re signed in, but $appLabel didn\'t start playing, ${settings.address}. Please tap play.', kind: 'command');
       return 'Signed in';
     }
     final reason = r['reason'] as String? ?? '';
@@ -1315,10 +1326,56 @@ class JarvisOrchestrator extends ChangeNotifier {
     }
   }
 
+  /// Returns 'continue' (re-read the screen), 'stop', or null (nothing to ask — let the brain decide).
+  Future<String?> _handleScreenQuestion(TaskTracker tr, String goal, Map<String, dynamic> dump, int step,
+      List<String> history, Set<String> asked) async {
+    final a = settings.address;
+    final screen = dump['screen'] as String? ?? '';
+    final pkg = dump['package'] as String?;
+    final q = LocalAgentBrain.detectQuestion(screen);
+    if (q == null || pkg == null) return null;
+    // The goal itself says which button to press ("allow camera", "skip the ad") → no need to ask.
+    final g = goal.toLowerCase();
+    if (q.buttons.any((b) => RegExp('\\b${RegExp.escape(b.label.toLowerCase())}\\b').hasMatch(g))) return null;
+    final sig = '$pkg|${q.question}|${q.buttons.map((b) => b.label).join('/')}';
+    if (!asked.add(sig)) return null; // already asked about this exact popup
+    final appLabel = (await apps.apps()).where((x) => x.packageName == pkg).map((x) => x.label).firstOrNull ?? 'The app';
+
+    // Sign-in wall → the guided login (Google / phone number + OTP), with permission.
+    final isLogin = q.buttons.where((b) => RegExp(r'^(sign in|log in|sign up|continue with (google|phone)|use phone number)$', caseSensitive: false).hasMatch(b.label)).length;
+    if (isLogin > 0 && !RegExp(r'\b(sign|log) ?(in|up)\b').hasMatch(g)) {
+      final ok = await _offerLogin(tr, pkg, appLabel);
+      history.add('$step. sign-in screen → ${ok ? 'signed in' : 'not signed in'}');
+      if (!ok) {
+        await _say('I\'ll stop here then, $a. Ask me again once you\'re signed in.');
+        return 'stop';
+      }
+      await _say('Carrying on with your request.', kind: 'command');
+      return 'continue';
+    }
+
+    tr.addStep(TaskStep(id: 'q$step', description: '$appLabel asks: ${q.question}', status: StepStatus.running));
+    unawaited(device.overlayUpdate(title: 'LEO · $appLabel IS ASKING', detail: q.question, warn: true));
+    final options = [...q.buttons.map((b) => b.label), 'Stop the task'];
+    final i = await _askChoice('$appLabel is asking: "${q.question}". What should I do, $a?', options, tr: tr);
+    if (i >= q.buttons.length) {
+      tr.updateStep('q$step', status: StepStatus.skipped, detail: 'You stopped the task');
+      await _say('Stopped, $a. Nothing was pressed.');
+      return 'stop';
+    }
+    final b = q.buttons[i];
+    final r = await device.screenAct('tap', index: b.index);
+    tr.updateStep('q$step', status: r['ok'] == true ? StepStatus.done : StepStatus.failed, detail: 'You chose "${b.label}"');
+    history.add('$step. tap [${b.index}] "${b.label}" (user chose on a popup) → ${r['ok'] == true ? 'ok' : 'FAILED'}');
+    await Future<void>.delayed(const Duration(milliseconds: 1200));
+    return 'continue';
+  }
+
   Future<String?> _agentLoop(TaskTracker tr, String goal, bool useLocal, LocalAgentBrain brain, String brainLabel) async {
     final a = settings.address;
     final history = <String>[];
     final installed = (await apps.apps()).map((x) => x.label).toList();
+    final askedQuestions = <String>{};
     const maxSteps = 18;
     for (var step = 1; step <= maxSteps; step++) {
       await tr.control.checkpoint();
@@ -1330,6 +1387,11 @@ class JarvisOrchestrator extends ChangeNotifier {
         }
         throw Exception('I can\'t read the screen (${dump['reason']}).');
       }
+      // The app is asking something (permission, "One-Step Login", update, sign-in wall…)?
+      // Tell the user what it says and do what they choose — never guess on their behalf.
+      final handled = await _handleScreenQuestion(tr, goal, dump, step, history, askedQuestions);
+      if (handled == 'stop') return 'Stopped by user';
+      if (handled == 'continue') continue;
       final Map<String, dynamic> plan;
       if (useLocal) {
         plan = await tr.control.guard(brain.step(
@@ -1645,6 +1707,42 @@ class JarvisOrchestrator extends ChangeNotifier {
     }
     final text = (p['text'] as String?) ?? 'next';
     final when = RegExp(r'\d').hasMatch(text) ? TimeParser.when(text) : null;
+    // Preferred path: flip the switch in the Clock app's list ourselves (works even when the alarm isn't ringing).
+    if ((when != null || p['all'] == true) && await device.accessibilityEnabled()) {
+      if (p['all'] == true) {
+        final w = Completer<int>();
+        choice = ChoicePrompt('Turn off ALL your alarms?', ['Yes, turn them all off', 'No']);
+        _choiceWait = w;
+        notifyListeners();
+        await _say('That will switch off every alarm in your Clock app, $a. Shall I?', kind: 'question');
+        final pick = await w.future.timeout(const Duration(seconds: 30), onTimeout: () => 1);
+        if (pick != 0) {
+          tr.updateStep('do', status: StepStatus.skipped, detail: 'You said no');
+          await _say('Okay, I left your alarms alone.');
+          return 'Kept alarms';
+        }
+      }
+      final ampmKnown = RegExp(r'\b(a\.?m|p\.?m|morning|evening|night|afternoon|tonight)\b').hasMatch(text.toLowerCase());
+      final res = await device.clockSwitchOff(hour: when?.at.hour, minute: when?.at.minute, ampmKnown: ampmKnown, all: p['all'] == true);
+      if (res['ok'] == true) {
+        final off = ((res['turnedOff'] as List?) ?? const []).cast<Object?>().map((e) => '$e').toList();
+        final already = ((res['alreadyOff'] as List?) ?? const []).cast<Object?>().map((e) => '$e').toList();
+        tr.updateStep('do', status: StepStatus.done, detail: off.isEmpty ? 'Nothing to switch off' : 'Switched off: ${off.join(', ')}');
+        if (off.isNotEmpty) {
+          await _say(p['all'] == true
+              ? 'Done, $a. I switched off ${off.length} alarm${off.length == 1 ? '' : 's'}.'
+              : 'Done, $a. Your ${off.first} alarm is off.', kind: 'command');
+          return 'Turned off ${off.join(', ')}';
+        }
+        await _say(already.isNotEmpty
+            ? 'Your ${already.first} alarm is already off, $a.'
+            : p['all'] == true
+                ? 'All your alarms are already off, $a.'
+                : 'I couldn\'t find a ${text.trim()} alarm in your Clock app, $a.', kind: 'command');
+        return already.isNotEmpty ? 'Already off' : 'Not found';
+      }
+      debugPrint('LEO clockSwitchOff fell back: ${res['status']}');
+    }
     final r = p['all'] == true
         ? await device.dismissAlarm(mode: 'all')
         : when != null
@@ -1668,7 +1766,7 @@ class JarvisOrchestrator extends ChangeNotifier {
       await _say(list.isEmpty
           ? 'You have no upcoming reminders, $a.'
           : 'You have ${list.length} reminder${list.length == 1 ? '' : 's'}: ${list.take(5).map(fmt).join('; ')}.', kind: 'command');
-      return '${list.length} reminders';
+      return '${list.length} reminder${list.length == 1 ? '' : 's'}';
     }
     if (list.isEmpty) {
       await _say('There are no reminders to delete, $a.');
@@ -1750,16 +1848,55 @@ class JarvisOrchestrator extends ChangeNotifier {
     return 'Opened';
   }
 
+  /// A site's own search results page; unknown sites fall back to a Google `site:` search.
+  static String siteSearchUrl(String site, String q) {
+    final e = Uri.encodeQueryComponent(q);
+    final host = site.replaceFirst(RegExp(r'^https?://'), '').replaceFirst(RegExp(r'^www\.'), '').split('/').first;
+    final base = host.contains('.') ? host : '$host.com';
+    final name = base.split('.').first;
+    return switch (name) {
+      'wikipedia' => 'https://en.wikipedia.org/w/index.php?search=$e',
+      'youtube' => 'https://www.youtube.com/results?search_query=$e',
+      'github' => 'https://github.com/search?q=$e',
+      'amazon' => 'https://www.amazon.in/s?k=$e',
+      'flipkart' => 'https://www.flipkart.com/search?q=$e',
+      'reddit' => 'https://www.reddit.com/search/?q=$e',
+      'stackoverflow' => 'https://stackoverflow.com/search?q=$e',
+      'google' => 'https://www.google.com/search?q=$e',
+      'bing' => 'https://www.bing.com/search?q=$e',
+      'duckduckgo' => 'https://duckduckgo.com/?q=$e',
+      'twitter' || 'x' => 'https://x.com/search?q=$e',
+      'imdb' => 'https://www.imdb.com/find/?q=$e',
+      'myntra' => 'https://www.myntra.com/$e',
+      'swiggy' => 'https://www.swiggy.com/search?query=$e',
+      'zomato' => 'https://www.zomato.com/search?q=$e',
+      'quora' => 'https://www.quora.com/search?q=$e',
+      'linkedin' => 'https://www.linkedin.com/search/results/all/?keywords=$e',
+      _ => 'https://www.google.com/search?q=${Uri.encodeQueryComponent('site:$base $q')}',
+    };
+  }
+
   Future<String?> _runWebsite(TaskTracker tr) async {
     final a = settings.address;
     var site = (tr.snapshot.params['site'] as String).trim().toLowerCase();
     site = site.replaceAll(RegExp(r'\s+(website|site)$'), '').replaceAll(' dot com', '.com').replaceAll(' ', '');
-    final url = site.startsWith('http') ? site : 'https://${site.contains('.') ? site : '$site.com'}';
+    var url = site.startsWith('http') ? site : 'https://${site.contains('.') ? site : '$site.com'}';
+    final then = tr.snapshot.params['then'] as String?;
+    // "… and search for X": use the site's own search page — typing into the page is unreliable
+    // (the browser's address bar is also a text box).
+    final sq = then == null ? null : RegExp(r'^(?:search|look up|find|look for)(?:\s+(?:for|about))?\s+(.+)$', caseSensitive: false).firstMatch(then.trim());
+    if (sq != null) {
+      final searchUrl = siteSearchUrl(site, sq.group(1)!.trim());
+      tr.addStep(TaskStep(id: 'open', description: 'Search $site for "${sq.group(1)!.trim()}"'));
+      final r = await tr.step('open', () => device.openUrl(searchUrl));
+      if (r?['ok'] != true) throw Exception('No browser could open $searchUrl.');
+      await _say('Searching $site for ${sq.group(1)!.trim()}, $a.', kind: 'command');
+      return 'Searched';
+    }
     tr.addStep(TaskStep(id: 'open', description: 'Open $url'));
     final r = await tr.step('open', () => device.openUrl(url));
     if (r?['ok'] != true) throw Exception('No browser could open $url.');
     await _say('Opening $site, $a.', kind: 'command');
-    final then = tr.snapshot.params['then'] as String?;
     if (then != null && then.isNotEmpty) {
       await Future<void>.delayed(const Duration(seconds: 3));
       return _agentFor(tr, '$then on $site');
@@ -1769,6 +1906,13 @@ class JarvisOrchestrator extends ChangeNotifier {
 
   Future<String?> _runInstallApp(TaskTracker tr) async {
     final app = tr.snapshot.params['app'] as String;
+    // Already on the phone? Say so instead of re-installing.
+    final have = (await apps.resolve(app)).where((x) => AppResolverHelpers.closeName(x.label, app)).toList();
+    if (have.isNotEmpty) {
+      tr.addStep(TaskStep(id: 'check', description: 'Check installed apps', status: StepStatus.done, detail: '${have.first.label} is already installed'));
+      await _say('${have.first.label} is already installed, ${settings.address}. Say "open ${have.first.label}" to use it.', kind: 'command');
+      return 'Already installed';
+    }
     tr.addStep(TaskStep(id: 'store', description: 'Search Play Store for "$app"'));
     final r = await tr.step('store', () => device.openUrl('market://search?q=${Uri.encodeComponent(app)}&c=apps', package: 'com.android.vending'));
     if (r?['ok'] != true) throw Exception('The Play Store could not be opened.');
@@ -1839,7 +1983,10 @@ class JarvisOrchestrator extends ChangeNotifier {
       String? title;
       for (var j = i - 1; j >= 0 && j >= i - 6; j--) {
         final l = lines[j];
-        if (l.length > 20 && !priceRe.hasMatch(l) && !RegExp(r'(sponsored|^ad\b|rating|stars|delivery|bought|offer)', caseSensitive: false).hasMatch(l)) {
+        if (priceRe.hasMatch(l)) break; // crossed into the previous product (or this one's MRP)
+        // Product titles are long; skip filter chips / guides like "ANC vs transparency mode", "Best earbuds for iPhone".
+        final chip = RegExp(r'(\bvs\.?\b|^best\b|^top\b|\bguide\b|\?$|^shop\b|^see\b|^explore\b)', caseSensitive: false).hasMatch(l);
+        if (l.length >= 25 && !chip && !RegExp(r'(sponsored|^ad\b|rating|stars|delivery|bought|offer|ends in)', caseSensitive: false).hasMatch(l)) {
           title = l;
           break;
         }
@@ -1959,25 +2106,55 @@ class JarvisOrchestrator extends ChangeNotifier {
     await tr.step('open', () => device.openWhatsAppChat('com.whatsapp', c.primaryNumber, ''));
     await Future<void>.delayed(const Duration(seconds: 3));
     final t = await device.screenText();
-    final noise = RegExp(r'^(online|typing…|today|yesterday|message|\d{1,2}:\d{2}\s?(am|pm)?|end-to-end encrypted.*|tap to.*|.*joined using.*)$', caseSensitive: false);
+    final noise = RegExp(
+        r'^(online|typing…|today|yesterday|message|learn more|last seen.*|\d{1,2}:\d{2}\s?(am|pm)?|'
+        r'\d{1,2} (january|february|march|april|may|june|july|august|september|october|november|december)( \d{4})?|'
+        r'(monday|tuesday|wednesday|thursday|friday|saturday|sunday)|'
+        r'.*end-to-end encrypted.*|.*messages and calls are.*|tap to.*|.*joined using.*|.*disappearing messages.*|'
+        r'.*security code (changed|with).*|.*is a contact|.*not in your contacts.*|\d+ unread messages?)$',
+        caseSensitive: false);
     final lines = ((t['lines'] as List?) ?? const [])
         .cast<String>()
         .where((l) => l.length > 1 && !noise.hasMatch(l.trim()) && l.trim() != c.name)
         .toList();
     final last = lines.length > 6 ? lines.sublist(lines.length - 6) : lines;
     tr.addStep(TaskStep(id: 'read', description: 'Read the latest messages', status: StepStatus.done, detail: '${last.length} lines'));
-    await _say(last.isEmpty ? 'I opened your chat with ${c.name}, but I can\'t see any messages, $a.' : 'Latest in your chat with ${c.name}: ${last.join('. ')}',
+    await _say(last.isEmpty ? 'There are no messages in your chat with ${c.name} yet, $a.' : 'Latest in your chat with ${c.name}: ${last.join('. ')}',
         kind: 'screen');
     return 'Read ${last.length}';
   }
 
   /// Contacts by name, with a fuzzy fallback for mis-heard names ("Rahool" → Rahul).
+  /// Alternate spellings of a spoken name (one swap at a time): Pawan→Pavan, Sreya→Shreya, Deepak→Dipak.
+  static List<String> spellingVariants(String name) {
+    const swaps = [
+      ('w', 'v'), ('v', 'w'), ('ph', 'f'), ('f', 'ph'), ('aa', 'a'), ('ee', 'i'), ('i', 'ee'), ('oo', 'u'), ('u', 'oo'),
+      ('sh', 's'), ('s', 'sh'), ('th', 't'), ('t', 'th'), ('dh', 'd'), ('kh', 'k'), ('z', 'j'), ('j', 'z'), ('y', 'i'),
+    ];
+    final n = name.toLowerCase().trim();
+    final out = <String>{};
+    for (final (from, to) in swaps) {
+      var i = n.indexOf(from);
+      while (i >= 0) {
+        out.add(n.substring(0, i) + to + n.substring(i + from.length));
+        i = n.indexOf(from, i + 1);
+      }
+    }
+    out.remove(n);
+    return out.take(12).toList();
+  }
+
   Future<List<ContactMatch>> _findContacts(TaskTracker tr, String name) async {
     var st = await Permission.contacts.status;
     if (!st.isGranted) st = await Permission.contacts.request();
     if (!st.isGranted) throw Exception('I need Contacts permission to find $name.');
     final exact = await device.searchContacts(name);
     if (exact.isNotEmpty) return exact;
+    // Speech-to-text spells Indian names differently from how they're saved: Pawan/Pavan, Shreya/Sreya…
+    for (final v in spellingVariants(name)) {
+      final hit = await device.searchContacts(v);
+      if (hit.isNotEmpty) return hit;
+    }
     final first = name.split(' ').first.toLowerCase();
     if (first.length < 3) return const [];
     final broad = await device.searchContacts(first.substring(0, 2));
@@ -1988,9 +2165,32 @@ class JarvisOrchestrator extends ChangeNotifier {
     return [for (final s in scored) if (s.$2 >= 0.7) s.$1];
   }
 
-  // ---- sign-in help: every step happens only after the user's answer. No passwords, no auto-OTP.
+  /// Pulls a one-time code out of an SMS notification that arrived after [since]. Waits up to 45 s.
+  Future<String?> _waitForOtp(TaskTracker tr, DateTime since) async {
+    if (!await device.notificationAccess()) return null;
+    for (var i = 0; i < 15; i++) {
+      await tr.control.checkpoint();
+      final items = await device.readNotifications(whatsapp: false, email: false, sms: true);
+      for (final n in items.where((n) => n.time.isAfter(since.subtract(const Duration(seconds: 5))))) {
+        final code = extractOtp(n.lines.join(' '));
+        if (code != null) return code;
+      }
+      await Future<void>.delayed(const Duration(seconds: 3));
+    }
+    return null;
+  }
+
+  /// "123456 is your Spotify verification code" → "123456". Needs an OTP-ish word nearby.
+  static String? extractOtp(String text) {
+    if (!RegExp(r'\b(otp|code|verification|verify|one[- ]time|passcode|pin)\b', caseSensitive: false).hasMatch(text)) return null;
+    final m = RegExp(r'(?<![\d₹$.,/])(\d{4,8})(?!\d)(?![.,/]\d)').allMatches(text).map((m) => m.group(1)!).toList();
+    if (m.isEmpty) return null;
+    return m.firstWhere((c) => c.length == 6, orElse: () => m.first);
+  }
+
+  // ---- sign-in help: every step happens only after the user's answer. Never passwords; OTPs only with your OK.
   /// Returns true if the user ended up signed in.
-  Future<bool> _offerLogin(TaskTracker tr, String pkg, String appLabel, {bool userAsked = false}) async {
+  Future<bool> _offerLogin(TaskTracker tr, String pkg, String appLabel, {bool userAsked = false, String? preferred}) async {
     if (!await device.accessibilityEnabled()) return false;
     final scan = await device.loginScan(pkg);
     if (scan['needsLogin'] != true) {
@@ -2011,7 +2211,9 @@ class JarvisOrchestrator extends ChangeNotifier {
       final options = ((scan['options'] as List?) ?? const ['google']).cast<String>();
       const labels = {'google': 'Google account', 'phone': 'Phone number', 'email': 'Email'};
       var method = options.first;
-      if (options.length > 1) {
+      if (preferred != null && options.contains(preferred)) {
+        method = preferred; // the user already said how
+      } else if (options.length > 1) {
         final i = await _askChoice('Which way should I sign you in?', [for (final o in options) labels[o] ?? o], tr: tr);
         method = options[i];
       }
@@ -2033,10 +2235,18 @@ class JarvisOrchestrator extends ChangeNotifier {
           final said = await _askFreeText(tr, 'Which phone number should I use, $a?');
           final number = said.replaceAll(RegExp(r'[^0-9+]'), '');
           if (number.length < 10) throw Exception('That doesn\'t look like a full phone number.');
+          final sentAt = DateTime.now();
           final r = await device.loginEnter(pkg, number);
           if (r['ok'] != true) throw Exception('I couldn\'t type the number (${r['reason']}).');
-          final code = (await _askFreeText(tr, 'I\'ve asked $appLabel to send the code. Tell me the OTP when it arrives, $a.'))
-              .replaceAll(RegExp(r'[^0-9]'), '');
+          tr.updateStep('login', detail: 'Number entered — waiting for the code');
+          await _say('I\'ve entered your number, $a. Waiting for the code.');
+          // Read the OTP from the SMS notification (on the phone only); the user confirms before it's typed.
+          var code = await _waitForOtp(tr, sentAt);
+          if (code != null) {
+            final ok = await _askChoice('I see the code $code in your messages. Shall I enter it?', ['Yes, enter it', 'No'], tr: tr);
+            if (ok != 0) code = null;
+          }
+          code ??= (await _askFreeText(tr, 'Tell me the OTP when it arrives, $a.')).replaceAll(RegExp(r'[^0-9]'), '');
           if (code.length < 4) throw Exception('I didn\'t get a valid code.');
           final r2 = await device.loginEnter(pkg, code);
           if (r2['ok'] != true) throw Exception('I couldn\'t enter the code (${r2['reason']}).');
@@ -2058,7 +2268,7 @@ class JarvisOrchestrator extends ChangeNotifier {
         return false;
       }
       tr.updateStep('login', status: StepStatus.done);
-      await _say('You\'re signed in to $appLabel, $a.');
+      if (!userAsked) await _say('Login completed, $a.');
       return true;
     } finally {
       unawaited(device.loginRelease()); // shrink accessibility scope back to WhatsApp/YouTube
@@ -2077,8 +2287,19 @@ class JarvisOrchestrator extends ChangeNotifier {
     if (!await device.accessibilityEnabled()) {
       throw Exception('I need the LEO accessibility service to help with sign-in. Turn it on in Permissions.');
     }
-    final ok = await _offerLogin(tr, app.packageName, app.label, userAsked: true);
-    return ok ? 'Signed in' : 'Not signed in';
+    final ok = await _offerLogin(tr, app.packageName, app.label, userAsked: true, preferred: tr.snapshot.params['method'] as String?);
+    if (!ok) return 'Not signed in';
+    // Next: what to do inside this app ("play Kesariya" → plays on Spotify).
+    final next = (await _askFreeText(tr, 'Login completed, ${settings.address}. What should I do in ${app.label}?')).trim();
+    if (next.isEmpty || RegExp(r'^(nothing|no|nope|that.?s it|done|ok(ay)?|thanks?( you)?)\b', caseSensitive: false).hasMatch(next)) {
+      await _say('Okay, ${settings.address}.');
+      return 'Signed in';
+    }
+    final mentionsApp = (await apps.apps()).any((x) => x.label.length > 2 && next.toLowerCase().contains(x.label.toLowerCase()));
+    final followUp = mentionsApp ? next : '$next on ${app.label}';
+    // Run it as a new request once this task has finished.
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 400), () => handleInput(followUp, source: 'voice')));
+    return 'Signed in';
   }
 
   // ---- runner: phone call (local — no AI). Ambiguous contacts / numbers are asked, never guessed.
