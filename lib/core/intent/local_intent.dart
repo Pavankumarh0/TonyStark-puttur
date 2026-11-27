@@ -195,3 +195,9 @@ class MediaControlIntent extends LocalIntent {
   final MediaAction action;
   const MediaControlIntent(this.action);
 }
+
+/// "Sign in to YouTube Music" — opens the app and walks through sign-in with the user's consent.
+class SignInIntent extends LocalIntent {
+  final String appName;
+  const SignInIntent(this.appName);
+}

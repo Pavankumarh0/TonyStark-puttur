@@ -57,6 +57,11 @@ class LocalIntentEngine {
     final media = _mediaControl(n);
     if (media != null) return media;
 
+    final signIn = RegExp(r"^(?:sign|log)\s*(?:in|into|on)(?:\s+(?:to|into|on))?\s+(?:my\s+)?(.+?)(?:\s+(?:app|account))?$",
+            caseSensitive: false)
+        .firstMatch(text);
+    if (signIn != null && signIn.group(1)!.split(' ').length <= 4) return SignInIntent(signIn.group(1)!.trim());
+
     final control = _control(n, ctx);
     if (control != null) return control;
 
