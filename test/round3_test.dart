@@ -202,4 +202,29 @@ void main() {
     test('asking a person is not this', () => expect(e.parse('ask Rahul if he is coming'), isNot(isA<AskAppIntent>())));
     test('open my resume pdf still a file', () => expect(e.parse('open my resume pdf'), isA<FindFileIntent>()));
   });
+
+  group('Click a button by name', () {
+    for (final t in ['click the save button', 'click on Save', 'press save', 'tap on the save button', 'hit the save icon', 'select save option']) {
+      test(t, () => expect((e.parse(t) as ScreenCommandIntent).arg?.toLowerCase(), 'save'));
+    }
+    const screen = '[0] Button "Save to Drive" (tap)\n[1] Button "Save" (tap)\n[2] TextView "Saved items" ()\n[3] Button "Cancel" (tap)';
+    test('exact name wins over longer labels', () {
+      final m = JarvisOrchestrator.matchButtons(screen, 'save');
+      expect(m.length, 1);
+      expect(m.first.index, 1);
+    });
+    test('description part counts', () {
+      final m = JarvisOrchestrator.matchButtons('[0] ImageButton " | Send message" (tap)\n[1] ImageButton " | Attach" (tap)', 'send');
+      expect(m.first.index, 0);
+    });
+    test('equal matches → several (LEO asks)', () {
+      final m = JarvisOrchestrator.matchButtons('[0] Button "Follow" (tap)\n[1] Button "Follow" (tap)\n[2] Button "Follow back" (tap)', 'follow');
+      expect(m.length, 1); // same label twice is one choice
+    });
+    test('different buttons that tie → both offered', () {
+      final m = JarvisOrchestrator.matchButtons('[0] Button "Add to cart" (tap)\n[1] Button "Add to wishlist" (tap)', 'add');
+      expect(m.length, 2);
+    });
+    test('nothing similar → empty (agent takes over)', () => expect(JarvisOrchestrator.matchButtons(screen, 'checkout'), isEmpty));
+  });
 }

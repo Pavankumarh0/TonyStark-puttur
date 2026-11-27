@@ -279,7 +279,11 @@ class LocalIntentEngine {
     if (RegExp(r"^(read (this|it|that|the screen|this page|this screen|out this|this message|this chat|what's on (the|my) screen)|what's on (my|the) screen|what is on (my|the) screen|what does it say|what does this say)$").hasMatch(t)) {
       return const ScreenCommandIntent(ScreenCommand.read);
     }
-    final tap = RegExp(r"^(?:tap|click|press|select|hit|choose)\s+(?:on\s+)?(?:the\s+)?(.+?)(?:\s+button|\s+option)?$", caseSensitive: false).firstMatch(text);
+    final tap = RegExp(
+            r"^(?:tap|click|press|select|hit|choose|push|touch)\s+(?:on\s+)?(?:the\s+|that\s+|this\s+)?(.+?)"
+            r"(?:\s+(?:button|option|tab|icon|link|menu|toggle|switch))?(?:\s+(?:on the screen|on screen|here))?$",
+            caseSensitive: false)
+        .firstMatch(text);
     if (tap != null) return ScreenCommandIntent(ScreenCommand.tap, arg: tap.group(1)!.trim());
     final typ = RegExp(r"^(?:type|write|enter)\s+(.+?)(?:\s+(?:here|in the box|in the field))?$", caseSensitive: false).firstMatch(text);
     if (typ != null && !RegExp(r"\b(email|mail|letter|message to|essay|post|document)\b", caseSensitive: false).hasMatch(text)) {

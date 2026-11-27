@@ -2119,14 +2119,36 @@ class JarvisOrchestrator extends ChangeNotifier {
         await device.screenDump();
         r = await device.screenAct('type', text: arg ?? '');
       case ScreenCommand.tap:
-        final dump = await device.screenDump();
-        final screen = dump['screen'] as String? ?? '';
-        final idx = _findElement(screen, arg ?? '');
-        if (idx == null) {
-          // Not a visible button: treat it as a task for the screen agent.
-          tr.updateStep('do', status: StepStatus.skipped, detail: 'No "$arg" on screen');
-          return _agentFor(tr, 'tap $arg');
+        final want = arg ?? '';
+        var dump = await device.screenDump(max: 90, skipOwn: true);
+        var matches = matchButtons(dump['screen'] as String? ?? '', want);
+        // Not visible? Look further down the screen before giving up.
+        for (var s = 0; matches.isEmpty && s < 2; s++) {
+          final sc = await device.screenAct('scroll', dir: 'down');
+          if (sc['ok'] != true) break;
+          await Future<void>.delayed(const Duration(milliseconds: 700));
+          dump = await device.screenDump(max: 90, skipOwn: true);
+          matches = matchButtons(dump['screen'] as String? ?? '', want);
         }
+        if (matches.isEmpty) {
+          // Not a visible button: treat it as a task for the screen agent.
+          tr.updateStep('do', status: StepStatus.skipped, detail: 'No "$want" on screen');
+          return _agentFor(tr, 'tap $want');
+        }
+        var pick = matches.first;
+        if (matches.length > 1) {
+          // Two different buttons fit equally well → ask, don't guess.
+          final i = await _askChoice('I see ${matches.length} buttons like that. Which one?', [for (final m in matches.take(4)) m.label], tr: tr);
+          pick = matches[i];
+        }
+        final idx = pick.index;
+        final screen = dump['screen'] as String? ?? '';
+        tr.updateStep('do', description: 'Tap "${pick.label}"');
+        // Show which button before pressing it.
+        await device.overlayShow();
+        await device.overlayUpdate(title: 'LEO · TAPPING', detail: pick.label, highlightIndex: idx);
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+        unawaited(Future<void>.delayed(const Duration(milliseconds: 900), device.overlayHide));
         final line = screen.split('\n').firstWhere((l) => l.startsWith('[$idx]'), orElse: () => '');
         if (_sensitiveWords.hasMatch(line)) {
           final ok = await _askApproval(tr,
@@ -2145,7 +2167,61 @@ class JarvisOrchestrator extends ChangeNotifier {
     }
     if (r['ok'] != true) throw Exception('That didn\'t work (${r['reason'] ?? 'unknown'}).');
     tr.updateStep('do', status: StepStatus.done);
+    if (cmd == ScreenCommand.tap) {
+      final what = tr.snapshot.steps.where((s) => s.id == 'do').firstOrNull?.description.replaceFirst('Tap ', '') ?? '"$arg"';
+      await _say(_loopRunning ? 'Tapped $what, $a. What next?' : 'Tapped $what, $a.', kind: 'command');
+    }
     return 'Done';
+  }
+
+  /// On-screen buttons matching a spoken name, best first. Several entries only when they tie
+  /// (different buttons that fit equally well → LEO asks which).
+  static List<({int index, String label})> matchButtons(String screen, String want) {
+    String norm(String s) => s.toLowerCase().replaceAll(RegExp(r"[^a-z0-9 ]"), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+    final w = norm(want);
+    if (w.isEmpty) return const [];
+    final wWords = w.split(' ').where((x) => x.length > 1).toSet();
+    final scored = <({int index, String label, int score})>[];
+    for (final l in screen.split('\n')) {
+      final m = RegExp(r'^\[(\d+)\]\s+\S+\s+"(.*)"\s*(?:\((.*)\))?$').firstMatch(l.trim());
+      if (m == null) continue;
+      final flags = m.group(3) ?? '';
+      final full = m.group(2)!;
+      // A line's label may carry "text | description | hint": score the best part.
+      var best = 0;
+      for (final part in full.split(' | ')) {
+        final p = norm(part.replaceFirst(RegExp(r'^hint:\s*'), ''));
+        if (p.isEmpty) continue;
+        var s = 0;
+        if (p == w) {
+          s = 100;
+        } else if (p.startsWith('$w ') || p.endsWith(' $w')) {
+          s = 70;
+        } else if (' $p '.contains(' $w ')) {
+          s = 55;
+        } else {
+          final pw = p.split(' ').toSet();
+          final hit = wWords.where(pw.contains).length;
+          if (hit > 0 && hit == wWords.length) s = 40 - (pw.length - hit).clamp(0, 20);
+          else if (hit > 0) s = 10 + hit * 5;
+        }
+        if (s > best) best = s;
+      }
+      if (best == 0) continue;
+      if (flags.contains('tap')) best += 5; // prefer things that can actually be pressed
+      final label = full.split(' | ').firstWhere((x) => x.trim().isNotEmpty, orElse: () => want).trim();
+      scored.add((index: int.parse(m.group(1)!), label: label, score: best));
+    }
+    if (scored.isEmpty) return const [];
+    scored.sort((a, b) => b.score.compareTo(a.score));
+    final top = scored.first.score;
+    if (top < 15) return const []; // too weak — let the agent figure it out
+    final ties = <({int index, String label})>[];
+    final seen = <String>{};
+    for (final s in scored.where((s) => s.score == top)) {
+      if (seen.add(s.label.toLowerCase())) ties.add((index: s.index, label: s.label));
+    }
+    return ties;
   }
 
   /// Apps where typing + sending reaches a PERSON. These keep the WhatsApp-style flow (exact message + approval).
