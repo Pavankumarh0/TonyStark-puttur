@@ -1427,7 +1427,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     tr.setParams({'brain': 'openai'});
     await _say('On it, $a. I\'ll show each step — say "stop" any time.', kind: 'command');
     await device.overlayShow();
-    var n = 0, calls = 0;
+    var n = 0;
     final agent = ScreenAgent(
       device: device,
       apps: apps,
@@ -1461,7 +1461,6 @@ class JarvisOrchestrator extends ChangeNotifier {
               title: warn ? 'LEO · WAITING FOR YOUR OK' : 'LEO · STEP $n · OPENAI', detail: s, highlightIndex: index, warn: warn));
         },
         onUsage: (input, output, cached, ms, sent) {
-          calls++;
           final cost = Pricing.cost('openai', model, input, output, cached);
           unawaited(memory.logCloud(
               provider: 'openai', model: model, purpose: 'screen_agent', sentText: sent, maskedCount: 0,
@@ -1474,11 +1473,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     );
     try {
       final r = await agent.run(goal);
-      final cost = Pricing.cost('openai', model, r.inputTokens, r.outputTokens, 0);
-      tr.addStep(TaskStep(
-          id: 'usage', description: 'OpenAI brain', status: StepStatus.done,
-          detail: '$calls calls · ${r.inputTokens + r.outputTokens} tokens'
-              '${cost == null ? '' : ' · \$${cost.amount.toStringAsFixed(4)}'}'));
+      // Per-task tokens/cost are recorded in Analytics (onUsage above), not shown on the task card.
       switch (r.status) {
         case 'success':
           await _say(r.message.isEmpty ? 'Done, $a.' : r.message, kind: 'agent', route: 'openai');
@@ -3376,13 +3371,13 @@ class JarvisOrchestrator extends ChangeNotifier {
     debugPrint('LEO cloud-understand ($provider): ${res.commands} answer=${res.answer != null} · ${res.usageLine}');
     await _store('user', raw, source: source, kind: 'conversation', route: provider);
     if (res.commands.isEmpty) {
-      await _say(res.clarify ?? res.answer!, route: provider, kind: res.clarify != null ? 'question' : 'answer',
-          extraStoredText: '\n· ${res.usageLine}');
+      // Token counts stay in Analytics only (not shown in the conversation).
+      await _say(res.clarify ?? res.answer!, route: provider, kind: res.clarify != null ? 'question' : 'answer');
       return true;
     }
     // Show the plan + its cost once (no spoken words: LEO reports each step as it happens).
     final planText = res.commands.map((c) => c.startsWith('on the phone:') ? c.substring(13).trim() : c).join('  →  ');
-    await _store('jarvis', 'Plan: $planText\n· ${res.usageLine}', route: provider, kind: 'plan');
+    await _store('jarvis', 'Plan: $planText', route: provider, kind: 'plan');
     // Run the commands in order through the normal engine (all rules & approvals apply). The first
     // starts now; the rest wait for each task to finish, so the voice loop stays free for answers.
     await handleInput(res.commands.first, source: 'sarvam');
@@ -3393,7 +3388,7 @@ class JarvisOrchestrator extends ChangeNotifier {
           description: 'Understood by OpenAI'
               '${res.commands.length > 1 ? ' (${res.commands.length} steps)' : ''}',
           status: StepStatus.done,
-          detail: '${res.usageLine}${red.count > 0 ? ' · ${red.count} private item${red.count == 1 ? '' : 's'} masked' : ''}'));
+          detail: red.count > 0 ? '${red.count} private item${red.count == 1 ? '' : 's'} masked' : null));
     }
     if (res.commands.length > 1) unawaited(_runCommandChain(res.commands.sublist(1)));
     return true;
