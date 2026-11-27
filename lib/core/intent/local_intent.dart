@@ -201,3 +201,57 @@ class SignInIntent extends LocalIntent {
   final String appName;
   const SignInIntent(this.appName);
 }
+
+// ---- Everyday phone actions (local, no AI)
+class SetAlarmIntent extends LocalIntent {
+  final String text; // full utterance — parsed by TimeParser
+  final String? label;
+  const SetAlarmIntent(this.text, {this.label});
+}
+
+class SetTimerIntent extends LocalIntent {
+  final Duration length;
+  final String? label;
+  const SetTimerIntent(this.length, {this.label});
+}
+
+class ScheduleMeetingIntent extends LocalIntent {
+  final String text; // parsed by TimeParser for the start time
+  final String? title;
+  final List<String> attendees;
+  final bool googleMeet;
+  final Duration? length;
+  const ScheduleMeetingIntent(this.text, {this.title, this.attendees = const [], this.googleMeet = false, this.length});
+}
+
+class StartMeetIntent extends LocalIntent {
+  const StartMeetIntent();
+}
+
+class NavigateIntent extends LocalIntent {
+  final String place;
+  const NavigateIntent(this.place);
+}
+
+class WebSearchIntent extends LocalIntent {
+  final String query;
+  const WebSearchIntent(this.query);
+}
+
+class FlashlightIntent extends LocalIntent {
+  final bool on;
+  const FlashlightIntent(this.on);
+}
+
+class CameraIntent extends LocalIntent {
+  final bool selfie;
+  final bool video;
+  const CameraIntent({this.selfie = false, this.video = false});
+}
+
+/// Wi-Fi / Bluetooth / data etc. Android doesn't allow apps to toggle these, so LEO opens the panel.
+class SettingsPanelIntent extends LocalIntent {
+  final String kind;
+  final bool? on;
+  const SettingsPanelIntent(this.kind, {this.on});
+}
