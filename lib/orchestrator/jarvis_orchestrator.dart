@@ -2428,14 +2428,36 @@ class JarvisOrchestrator extends ChangeNotifier {
     int? send;
     for (final l in screen().split('\n')) {
       final m = RegExp(r'^\[(\d+)\]\s+\S+\s+"(.*)"\s+\((.*)\)$').firstMatch(l.trim());
-      if (m == null || !m.group(3)!.contains('tap')) continue;
-      if (RegExp(r'^(send|send message|submit|send prompt|ask)\b', caseSensitive: false).hasMatch(m.group(2)!.split(' | ').first.trim())) {
+      // Never the text box itself (ChatGPT's placeholder is "Ask anything").
+      if (m == null || !m.group(3)!.contains('tap') || m.group(3)!.contains('input')) continue;
+      final lbl = m.group(2)!.split(' | ').where((x) => x.trim().isNotEmpty && !x.startsWith('hint:')).firstOrNull?.trim() ?? '';
+      if (RegExp(r'^(send|send message|submit|send prompt)$', caseSensitive: false).hasMatch(lbl)) {
         send = int.parse(m.group(1)!);
       }
     }
+    // No labelled Send button (ChatGPT's arrow has no label): tap the right-most button beside/below the
+    // text box with a real tap (such apps ignore accessibility clicks).
     tr.addStep(const TaskStep(id: 'send', description: 'Send it'));
-    final sent = await tr.step('send', () => send != null ? device.screenAct('tap', index: send) : device.screenAct('submit', index: input));
+    final inputNow = findInput() ?? input;
+    final sent = await tr.step('send', () async {
+      if (send != null) return device.screenAct('tap', index: send);
+      final r = await device.tapSendNear(inputNow);
+      debugPrint('LEO ask-app send: $r');
+      return r['ok'] == true ? r : await device.screenAct('submit', index: inputNow);
+    });
     if (sent?['ok'] != true) throw Exception('I typed it, but couldn\'t press send in $label — please tap send.');
+    // Verify: the request must have left the text box — never report "sent" on a guess.
+    await Future<void>.delayed(const Duration(milliseconds: 1200));
+    final after = await device.screenDump(max: 60, skipOwn: true);
+    final probe = (prompt.length > 24 ? prompt.substring(0, 24) : prompt).toLowerCase();
+    final stillTyped = (after['screen'] as String? ?? '')
+        .split('\n')
+        .any((l) => l.contains('input') && l.toLowerCase().contains(probe));
+    if (stillTyped) {
+      tr.updateStep('send', status: StepStatus.failed, detail: 'Text still in the box');
+      await _say('I typed it into $label, $a, but the send button didn\'t respond. Please tap send.');
+      return 'Typed, not sent';
+    }
     await _say(_loopRunning
         ? 'Asked $label: ${prompt[0].toLowerCase()}${prompt.substring(1)}. Say "read this" when you want the answer read out. What next, $a?'
         : 'Asked $label, $a.', kind: 'command');

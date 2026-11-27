@@ -166,6 +166,9 @@ class DeviceBridge {
   Future<Map<String, dynamic>> emailSend(String to, String body, {String? app}) =>
       _act('emailSend', {'to': to, 'body': body, 'app': app});
 
+  /// Finds the unlabelled send button beside/below text box [inputIndex] and taps it. {ok, bounds}
+  Future<Map<String, dynamic>> tapSendNear(int inputIndex) => _act('tapSendNear', {'index': inputIndex});
+
   /// Is a LEO screen (main app or assistant panel) showing right now?
   Future<bool> uiVisible() async {
     try {

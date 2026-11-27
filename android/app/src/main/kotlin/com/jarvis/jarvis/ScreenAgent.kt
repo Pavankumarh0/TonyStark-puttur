@@ -132,6 +132,41 @@ object ScreenAgent {
     }
 
     /** Screen bounds [l,t,r,b] of element [index] from the last dump (for the overlay highlight). */
+    /**
+     * Unlabelled send buttons (ChatGPT and many chat apps): searches the WHOLE window (not just the
+     * last dump, which may stop before the composer) for the right-most pressable element beside or
+     * just below the text box [inputIndex], and taps it with a real finger-style tap.
+     * Returns {ok, bounds} for logging.
+     */
+    fun tapSendNear(inputIndex: Int): Map<String, Any?> {
+        val s = svc() ?: return mapOf("ok" to false, "reason" to "accessibility_off")
+        val input = lastNodes.getOrNull(inputIndex) ?: return mapOf("ok" to false, "reason" to "no_input")
+        input.refresh()
+        val ib = Rect(); input.getBoundsInScreen(ib)
+        val root = s.rootInActiveWindow ?: return mapOf("ok" to false, "reason" to "no_window")
+        val band = (ib.height() * 1.6).toInt().coerceAtLeast(160)
+        var best: AccessibilityNodeInfo? = null; val bb = Rect()
+        val q = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
+        var seen = 0
+        while (q.isNotEmpty() && seen < 4000) {
+            val n = q.removeFirst(); seen++
+            for (i in 0 until n.childCount) n.getChild(i)?.let { q.add(it) }
+            if (!n.isClickable || n.isEditable || !n.isVisibleToUser) continue
+            val r = Rect(); n.getBoundsInScreen(r)
+            if (r.width() <= 0 || r.height() > ib.height() * 2 + 40 || r.width() > ib.width() / 2) continue
+            if (r.centerY() < ib.top - band / 2 || r.centerY() > ib.bottom + band) continue
+            if (r.centerX() < ib.left + ib.width() / 2) continue
+            if (best == null || r.right > bb.right + 8 || (kotlin.math.abs(r.right - bb.right) <= 8 && r.centerY() > bb.centerY())) {
+                best = n; bb.set(r)
+            }
+        }
+        val b = best ?: return mapOf("ok" to false, "reason" to "no_button", "input" to ib.toShortString())
+        val ok = tapAt(s, b)
+        android.util.Log.i("LEO", "tapSendNear input=${ib.toShortString()} button=${bb.toShortString()} ok=$ok")
+        Thread.sleep(700)
+        return mapOf("ok" to ok, "bounds" to bb.toShortString())
+    }
+
     fun boundsOf(index: Int?): IntArray? {
         val n = index?.let { lastNodes.getOrNull(it) } ?: return null
         n.refresh() // the screen may have moved since the dump (animations/scrolling)
@@ -192,6 +227,13 @@ object ScreenAgent {
                 node ?: return mapOf("ok" to false, "reason" to "no_such_element")
                 val c = clickable(node)
                 (c?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) || tapAt(s, node)
+            }
+            // A real finger-style tap at the element's centre — for apps (e.g. ChatGPT) whose buttons
+            // accept the accessibility "click" but ignore it.
+            "tap_gesture" -> {
+                node ?: return mapOf("ok" to false, "reason" to "no_such_element")
+                node.refresh()
+                tapAt(s, node)
             }
             "long_press" -> {
                 node ?: return mapOf("ok" to false, "reason" to "no_such_element")
