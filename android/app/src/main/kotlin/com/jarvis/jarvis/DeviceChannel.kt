@@ -157,6 +157,14 @@ object DeviceChannel {
                 }
             }
             "nowPlaying" -> background(result) { MediaBridge.nowPlaying(app) }
+            // ---------------- sign-in help (each step only after the user's answer)
+            "loginScan" -> background(result) { LoginAutomator.scan(call.argument("package")!!) }
+            "loginChoose" -> background(result) { LoginAutomator.choose(call.argument("package")!!, call.argument("method")!!) }
+            "loginAccounts" -> background(result) { LoginAutomator.accounts(call.argument("package")!!) }
+            "loginPickAccount" -> background(result) { LoginAutomator.pickAccount(call.argument("package")!!, call.argument("email")!!) }
+            "loginEnter" -> background(result) { LoginAutomator.enter(call.argument("package")!!, call.argument("value")!!) }
+            "loginPasswordShowing" -> background(result) { LoginAutomator.passwordShowing(call.argument("package")!!) }
+            "loginRelease" -> { LoginAutomator.release(); result.success(null) }
             "listenFocus" -> {
                 if (call.argument<Boolean>("on") == true) MediaBridge.beginListening(app) else MediaBridge.endListening(app)
                 result.success(null)

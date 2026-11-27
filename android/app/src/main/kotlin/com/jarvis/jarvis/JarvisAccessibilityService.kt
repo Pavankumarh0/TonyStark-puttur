@@ -32,6 +32,19 @@ class JarvisAccessibilityService : AccessibilityService() {
         return super.onUnbind(intent)
     }
 
+    private var basePackages: Array<String>? = null
+
+    /**
+     * Temporarily lets the service see [extra] apps (e.g. the app being signed into + Google's
+     * account picker). Pass an empty set to go back to the default WhatsApp/YouTube scope.
+     */
+    fun allowExtraPackages(extra: Set<String>) {
+        val info = serviceInfo ?: return
+        if (basePackages == null) basePackages = info.packageNames ?: emptyArray()
+        info.packageNames = (basePackages!!.toSet() + extra).toTypedArray()
+        serviceInfo = info
+    }
+
     /** Root node of the foreground window belonging to [pkg], or null. */
     fun rootFor(pkg: String): AccessibilityNodeInfo? {
         rootInActiveWindow?.let { if (it.packageName?.toString() == pkg) return it }

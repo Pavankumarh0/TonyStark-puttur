@@ -85,4 +85,12 @@ void main() {
     test('Hey Leo, play pesamale', () => expect((e.parse('Hey Leo, play pesamale') as PlayMediaIntent).query, 'pesamale'));
     test('Leo call pavan', () => expect((e.parse('Leo call pavan') as CallIntent).name, 'pavan'));
   });
+
+  group('Sign-in command (local)', () {
+    final e = LocalIntentEngine();
+    test('sign in to youtube music', () => expect((e.parse('sign in to youtube music') as SignInIntent).appName, 'youtube music'));
+    test('Leo, log into Spotify', () => expect((e.parse('Leo, log into Spotify') as SignInIntent).appName, 'Spotify'));
+    test('login to my instagram account', () => expect((e.parse('login to my instagram account') as SignInIntent).appName, 'instagram'));
+    test('open youtube is not sign-in', () => expect(e.parse('open youtube'), isA<OpenAppIntent>()));
+  });
 }

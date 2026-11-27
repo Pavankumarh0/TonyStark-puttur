@@ -471,6 +471,8 @@ class JarvisOrchestrator extends ChangeNotifier {
         _startTask('Open $appName', 'open_app', TaskRoute.local, {'query': appName});
       case PlayMediaIntent(:final query, :final app):
         _startTask('Play "$query"', 'play_media', TaskRoute.local, {'query': query, 'app': app.name});
+      case SignInIntent(:final appName):
+        _startTask('Sign in to $appName', 'sign_in', TaskRoute.local, {'query': appName});
       case CallIntent(:final name):
         _startTask('Call $name', 'call', TaskRoute.local, {'name': name});
       case CheckMessagesIntent(:final whatsapp, :final email):
@@ -872,6 +874,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     'play_media': _runPlayMedia,
     'call': _runCall,
     'check_messages': _runCheckMessages,
+    'sign_in': _runSignIn,
   };
 
   static const _kindToLabel = {
@@ -1072,6 +1075,11 @@ class JarvisOrchestrator extends ChangeNotifier {
       return title == null ? 'Playing' : 'Playing $title';
     }
     tr.updateStep('play', status: StepStatus.skipped, detail: r['reason'] as String?);
+    const pkgs = {'youtube': 'com.google.android.youtube', 'youtube_music': 'com.google.android.apps.youtube.music', 'spotify': 'com.spotify.music'};
+    if (await _offerLogin(tr, pkgs[appKey]!, appLabel)) {
+      await _say('You\'re signed in, ${settings.address}. Say "play $q" again and I\'ll start it.', kind: 'command');
+      return 'Signed in';
+    }
     final reason = r['reason'] as String? ?? '';
     await _say(
         reason.contains('Accessibility')
@@ -1079,6 +1087,99 @@ class JarvisOrchestrator extends ChangeNotifier {
             : '$reason. ${settings.address}, please tap play.',
         kind: 'command');
     return 'Results opened (not auto-played)';
+  }
+
+  // ---- sign-in help: every step happens only after the user's answer. No passwords, no auto-OTP.
+  /// Returns true if the user ended up signed in.
+  Future<bool> _offerLogin(TaskTracker tr, String pkg, String appLabel, {bool userAsked = false}) async {
+    if (!await device.accessibilityEnabled()) return false;
+    final scan = await device.loginScan(pkg);
+    if (scan['needsLogin'] != true) {
+      if (userAsked) await _say('$appLabel doesn\'t show a sign-in screen right now, ${settings.address}. You may already be signed in.');
+      return false;
+    }
+    final a = settings.address;
+    tr.addStep(TaskStep(id: 'login', description: 'Sign in to $appLabel (with your permission)'));
+    tr.updateStep('login', status: StepStatus.running);
+    try {
+      if (!userAsked) {
+        final ok = await _askChoice('$appLabel needs you to sign in. Shall I sign you in, $a?', ['Yes, sign me in', 'No'], tr: tr);
+        if (ok != 0) {
+          tr.updateStep('login', status: StepStatus.skipped, detail: 'You chose not to sign in');
+          return false;
+        }
+      }
+      final options = ((scan['options'] as List?) ?? const ['google']).cast<String>();
+      const labels = {'google': 'Google account', 'phone': 'Phone number', 'email': 'Email'};
+      var method = options.first;
+      if (options.length > 1) {
+        final i = await _askChoice('Which way should I sign you in?', [for (final o in options) labels[o] ?? o], tr: tr);
+        method = options[i];
+      }
+      if (!await device.loginChoose(pkg, method)) {
+        throw Exception('I couldn\'t find the ${labels[method]} option on the $appLabel screen.');
+      }
+      switch (method) {
+        case 'google':
+          final accounts = await device.loginAccounts(pkg);
+          if (accounts.isEmpty) {
+            tr.updateStep('login', status: StepStatus.skipped, detail: 'Google sign-in opened');
+            await _say('I\'ve opened Google sign-in, $a, but I can\'t see the account list. Please pick your account on screen.');
+            return false;
+          }
+          final i = await _askChoice('Which Google account should I use?', accounts, tr: tr);
+          if (!await device.loginPickAccount(pkg, accounts[i])) throw Exception('I couldn\'t select ${accounts[i]}.');
+          tr.updateStep('login', detail: 'Account: ${accounts[i]}');
+        case 'phone':
+          final said = await _askFreeText(tr, 'Which phone number should I use, $a?');
+          final number = said.replaceAll(RegExp(r'[^0-9+]'), '');
+          if (number.length < 10) throw Exception('That doesn\'t look like a full phone number.');
+          final r = await device.loginEnter(pkg, number);
+          if (r['ok'] != true) throw Exception('I couldn\'t type the number (${r['reason']}).');
+          final code = (await _askFreeText(tr, 'I\'ve asked $appLabel to send the code. Tell me the OTP when it arrives, $a.'))
+              .replaceAll(RegExp(r'[^0-9]'), '');
+          if (code.length < 4) throw Exception('I didn\'t get a valid code.');
+          final r2 = await device.loginEnter(pkg, code);
+          if (r2['ok'] != true) throw Exception('I couldn\'t enter the code (${r2['reason']}).');
+        case 'email':
+          final email = (await _askFreeText(tr, 'Which email address should I use, $a?')).replaceAll(' at ', '@').replaceAll(' ', '');
+          final r = await device.loginEnter(pkg, email);
+          if (r['ok'] != true) throw Exception('I couldn\'t type the email (${r['reason']}).');
+      }
+      await Future<void>.delayed(const Duration(seconds: 3));
+      if (await device.loginPasswordShowing(pkg)) {
+        tr.updateStep('login', status: StepStatus.skipped, detail: 'Waiting for you to type the password');
+        await _say('$appLabel is asking for a password, $a. For your security I never type passwords — please enter it yourself.');
+        return false;
+      }
+      final after = await device.loginScan(pkg);
+      if (after['needsLogin'] == true) {
+        tr.updateStep('login', status: StepStatus.failed, detail: 'Still on the sign-in screen');
+        await _say('$appLabel still shows the sign-in screen, $a. Please check it.');
+        return false;
+      }
+      tr.updateStep('login', status: StepStatus.done);
+      await _say('You\'re signed in to $appLabel, $a.');
+      return true;
+    } finally {
+      unawaited(device.loginRelease()); // shrink accessibility scope back to WhatsApp/YouTube
+    }
+  }
+
+  // ---- runner: "sign in to X"
+  Future<String?> _runSignIn(TaskTracker tr) async {
+    final query = tr.snapshot.params['query'] as String;
+    final matches = await tr.control.guard(apps.resolve(query));
+    if (matches.isEmpty) throw Exception('I couldn\'t find an app called "$query".');
+    final app = matches.first;
+    tr.addStep(TaskStep(id: 'launch', description: 'Open ${app.label}'));
+    await tr.step('launch', () => device.launchApp(app.packageName));
+    await Future<void>.delayed(const Duration(seconds: 2));
+    if (!await device.accessibilityEnabled()) {
+      throw Exception('I need the LEO accessibility service to help with sign-in. Turn it on in Permissions.');
+    }
+    final ok = await _offerLogin(tr, app.packageName, app.label, userAsked: true);
+    return ok ? 'Signed in' : 'Not signed in';
   }
 
   // ---- runner: phone call (local — no AI). Ambiguous contacts / numbers are asked, never guessed.
@@ -1225,6 +1326,7 @@ class JarvisOrchestrator extends ChangeNotifier {
       return ok;
     }, doneDetail: 'Launch intent accepted by Android');
     await _say('$label is open, ${settings.address}.', kind: 'command');
+    await _offerLogin(tr, pkg, label!);
     return '$label launched';
   }
 

@@ -143,6 +143,21 @@ class DeviceBridge {
   /// While listening, pause other audio (transient focus) like Gemini/Assistant; it resumes after.
   Future<void> listenFocus(bool on) => _ch.invokeMethod('listenFocus', {'on': on});
 
+  // ---- sign-in help (LEO only acts on the user's answers; never types passwords)
+  Future<Map<String, dynamic>> loginScan(String pkg) async =>
+      await _ch.invokeMapMethod<String, dynamic>('loginScan', {'package': pkg}) ?? const {'needsLogin': false};
+  Future<bool> loginChoose(String pkg, String method) async =>
+      (await _ch.invokeMapMethod<String, dynamic>('loginChoose', {'package': pkg, 'method': method}))?['ok'] == true;
+  Future<List<String>> loginAccounts(String pkg) async =>
+      (await _ch.invokeListMethod<String>('loginAccounts', {'package': pkg})) ?? const [];
+  Future<bool> loginPickAccount(String pkg, String email) async =>
+      (await _ch.invokeMapMethod<String, dynamic>('loginPickAccount', {'package': pkg, 'email': email}))?['ok'] == true;
+  Future<Map<String, dynamic>> loginEnter(String pkg, String value) async =>
+      await _ch.invokeMapMethod<String, dynamic>('loginEnter', {'package': pkg, 'value': value}) ?? const {'ok': false};
+  Future<bool> loginPasswordShowing(String pkg) async =>
+      await _ch.invokeMethod<bool>('loginPasswordShowing', {'package': pkg}) ?? false;
+  Future<void> loginRelease() => _ch.invokeMethod('loginRelease');
+
   // ---- assistant role / half-screen panel
   Future<bool> isDefaultAssistant() async => await _ch.invokeMethod<bool>('isDefaultAssistant') ?? false;
   Future<void> openAssistantSettings() => _ch.invokeMethod('openAssistantSettings');
