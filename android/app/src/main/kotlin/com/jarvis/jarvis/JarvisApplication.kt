@@ -24,5 +24,8 @@ class JarvisApplication : Application() {
 
         /** The activity the shared engine is currently attached to (main app or assistant panel). */
         @Volatile var activeHost: android.app.Activity? = null
+
+        /** How many LEO screens (main app / assistant panel) are on screen right now. */
+        @Volatile var visibleScreens = 0
     }
 }

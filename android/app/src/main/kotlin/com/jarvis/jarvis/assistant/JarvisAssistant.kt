@@ -15,7 +15,22 @@ import com.jarvis.jarvis.AssistActivity
  * Long-pressing the side key / home (or swiping up from a bottom corner) then opens the
  * half-screen LEO panel instead of Google's assistant.
  */
-class JarvisVoiceInteractionService : VoiceInteractionService()
+class JarvisVoiceInteractionService : VoiceInteractionService() {
+    override fun onReady() {
+        super.onReady()
+        instance = this
+    }
+
+    override fun onShutdown() {
+        if (instance === this) instance = null
+        super.onShutdown()
+    }
+
+    companion object {
+        /** Bound by the system while LEO is the default digital assistant. */
+        @Volatile var instance: JarvisVoiceInteractionService? = null
+    }
+}
 
 class JarvisSessionService : VoiceInteractionSessionService() {
     override fun onNewSession(args: Bundle?): VoiceInteractionSession = JarvisSession(this)

@@ -19,8 +19,14 @@ class MainActivity : FlutterActivity() {
         JarvisApplication.activeHost = this
     }
 
+    override fun onPause() {
+        super.onPause()
+        JarvisApplication.visibleScreens = maxOf(0, JarvisApplication.visibleScreens - 1)
+    }
+
     override fun onResume() {
         super.onResume()
+        JarvisApplication.visibleScreens++
         // The single engine can render into one window at a time. If the assistant panel took it
         // over while we were in the background, re-attach by recreating this activity.
         val host: Activity? = JarvisApplication.activeHost

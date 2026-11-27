@@ -27,11 +27,13 @@ class AssistActivity : FlutterActivity() {
 
     override fun onResume() {
         super.onResume()
+        JarvisApplication.visibleScreens++
         DeviceChannel.emit(mapOf("type" to "assist", "on" to true))
     }
 
     override fun onPause() {
         super.onPause()
+        JarvisApplication.visibleScreens = maxOf(0, JarvisApplication.visibleScreens - 1)
         if (isFinishing) DeviceChannel.emit(mapOf("type" to "assist", "on" to false))
     }
 

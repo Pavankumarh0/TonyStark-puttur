@@ -161,9 +161,9 @@ class _PermissionsScreenState extends State<PermissionsScreen> with WidgetsBindi
               child: Padding(
                 padding: EdgeInsets.all(14),
                 child: Text(
-                  'Known limits: the wake word works while the LEO listening notification is showing. '
-                  'It stops if you force-stop the app or swipe it away and Android kills the process, and it does not '
-                  'auto-start after a reboot (Android 15+ blocks microphone services at boot) — open LEO once after restarting.',
+                  'Say "Leo" anywhere — even with LEO closed — and the panel slides up over the app you\'re in. '
+                  'Set LEO as the Default assistant (above) so Android keeps it running and restarts it if it is closed. '
+                  'The "LEO is listening" notification shows whenever the wake word is on. The panel cannot open over the lock screen — unlock first.',
                   style: TextStyle(color: JColors.dim, fontSize: 12, height: 1.5),
                 ),
               ),

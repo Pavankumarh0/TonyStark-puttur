@@ -141,6 +141,16 @@ class DeviceBridge {
       await _ch.invokeMapMethod<String, dynamic>('nowPlaying') ?? const {};
 
   /// While listening, pause other audio (transient focus) like Gemini/Assistant; it resumes after.
+  /// Wake word heard: slide up the LEO panel over the current app if no LEO screen is showing.
+  /// Returns visible | session | activity | failed: ….
+  Future<String> wakePopup() async {
+    try {
+      return await _ch.invokeMethod<String>('wakePopup') ?? 'failed';
+    } catch (e) {
+      return 'failed: $e';
+    }
+  }
+
   Future<void> listenFocus(bool on) => _ch.invokeMethod('listenFocus', {'on': on});
 
   // ---- everyday phone actions (local, no AI). Each returns {ok, reason?}.

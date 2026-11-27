@@ -272,6 +272,8 @@ class JarvisOrchestrator extends ChangeNotifier {
       if (_loopRunning) return; // the running loop listens next
     }
     if (voice != VoicePhase.idle) return;
+    // Like "Hey Google": if LEO isn't on screen, pop the assistant panel up over the current app.
+    unawaited(device.wakePopup().then((r) => debugPrint('LEO wake popup: $r')));
     final midConversation = _loopRunning || (task?.state.isActive ?? false);
     unawaited(_startVoiceLoop(greet: !midConversation, ack: midConversation));
   }

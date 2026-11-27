@@ -140,6 +140,7 @@ object DeviceChannel {
                 }
             }
             // ---------------- process-scoped microphone
+            "wakePopup" -> result.success(WakePopup.show(app))
             "micStart" -> result.success(MicStreamer.start())
             "micStop" -> { MicStreamer.stop(); result.success(null) }
             "micRunning" -> result.success(MicStreamer.isRunning)
