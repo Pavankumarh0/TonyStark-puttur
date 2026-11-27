@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- All LEO traffic (OpenAI, Sarvam, model download) must be TLS. Plain HTTP is refused, and only the
+     system's certificate authorities are trusted: a certificate a user/MDM/malware installs on the
+     phone cannot be used to intercept LEO's traffic. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

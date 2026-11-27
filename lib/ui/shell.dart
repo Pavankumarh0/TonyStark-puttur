@@ -4,6 +4,7 @@ import 'analytics_screen.dart';
 import 'history_screen.dart';
 import 'home_screen.dart';
 import 'memory_screen.dart';
+import 'privacy_screen.dart';
 import 'settings_screen.dart';
 
 class JarvisShell extends StatefulWidget {
@@ -15,6 +16,15 @@ class JarvisShell extends StatefulWidget {
 
 class _JarvisShellState extends State<JarvisShell> {
   int _tab = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    // Informed consent before any optional cloud processing (OpenAI stays off until answered).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) showPrivacyConsent(context);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {

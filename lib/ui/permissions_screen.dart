@@ -197,6 +197,20 @@ class _PermissionsScreenState extends State<PermissionsScreen> with WidgetsBindi
               const SizedBox(height: 8),
               FilledButton(onPressed: onFix, child: const Text('Fix')),
             ],
+            if (ok == true) ...[
+              const SizedBox(height: 4),
+              // Android only lets the user revoke a permission: take them straight to the switch.
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () => title.toLowerCase().contains('accessibility')
+                      ? context.read<DeviceBridge>().openAccessibilitySettings()
+                      : openAppSettings(),
+                  icon: const Icon(Icons.block, size: 16),
+                  label: const Text('Revoke'),
+                ),
+              ),
+            ],
           ]),
         ),
       ),

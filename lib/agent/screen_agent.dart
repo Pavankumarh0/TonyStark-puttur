@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../ai/openai_brain.dart';
 import '../core/privacy_filter.dart';
+import '../data/vault.dart';
 import '../device/app_resolver.dart';
 import '../device/device_bridge.dart';
 import 'tools.dart';
@@ -61,6 +62,11 @@ class ScreenAgent {
   final ScreenAgentHooks hooks;
   final int maxSteps;
 
+  /// Encrypts saved hints. Hints are only kept when [remember] is true (the user opted in to
+  /// learning from their own commands); without it nothing about the task is persisted.
+  final Vault? vault;
+  final bool remember;
+
   ScreenAgent({
     required this.device,
     required this.apps,
@@ -69,6 +75,8 @@ class ScreenAgent {
     required this.model,
     required this.hooks,
     this.maxSteps = 16,
+    this.vault,
+    this.remember = false,
   });
 
   // ---- run state
@@ -171,8 +179,11 @@ Keep any text you write very short.''';
     try {
       final p = await SharedPreferences.getInstance();
       final all = <String>[];
+      if (!remember || vault == null) return const [];
       for (final k in p.getKeys().where((k) => k.startsWith('agent_hints_'))) {
-        all.addAll((jsonDecode(p.getString(k) ?? '[]') as List).cast<String>());
+        final plain = await vault!.open1(p.getString(k), 'prefs.agent_hints');
+        if (plain == null) continue; // legacy plaintext or unreadable: ignored
+        all.addAll((jsonDecode(plain) as List).cast<String>());
       }
       final words = goal.toLowerCase().split(RegExp(r'\W+')).where((w) => w.length > 3).toSet();
       final scored = [for (final h in all) (h, words.where(h.toLowerCase().contains).length)]..sort((a, b) => b.$2.compareTo(a.$2));
@@ -183,15 +194,19 @@ Keep any text you write very short.''';
   }
 
   Future<void> _saveHint(String goal) async {
-    if (_pkg == null || _history.isEmpty) return;
+    if (_pkg == null || _history.isEmpty || !remember || vault == null) return;
     try {
       final p = await SharedPreferences.getInstance();
-      final list = (jsonDecode(p.getString(_hintKey(_pkg!)) ?? '[]') as List).cast<String>();
-      final hint = '"${goal.length > 60 ? goal.substring(0, 60) : goal}" in $_pkg: ${_history.join(' → ')}';
+      final old = await vault!.open1(p.getString(_hintKey(_pkg!)), 'prefs.agent_hints');
+      final list = old == null ? <String>[] : (jsonDecode(old) as List).cast<String>();
+      // Never keep what was typed (messages, searches) — only which buttons led where.
+      final steps = _history.map((h) => h.startsWith('type ') ? 'type (text)' : h).join(' → ');
+      final g = PrivacyFilter.redact(goal.length > 60 ? goal.substring(0, 60) : goal).text;
+      final hint = '"$g" in $_pkg: $steps';
       list
         ..remove(hint)
         ..insert(0, hint);
-      await p.setString(_hintKey(_pkg!), jsonEncode(list.take(5).toList()));
+      await p.setString(_hintKey(_pkg!), (await vault!.seal1(jsonEncode(list.take(5).toList()), 'prefs.agent_hints'))!);
     } catch (_) {}
   }
 

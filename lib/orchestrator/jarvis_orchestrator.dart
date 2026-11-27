@@ -155,7 +155,8 @@ class JarvisOrchestrator extends ChangeNotifier {
     _lastUserAt = await memory.lastInteraction();
     final unfinished = await memory.unfinishedTasks();
     if (unfinished.isNotEmpty) task = unfinished.first;
-    classifier.train(learned: await memory.learnedExamples());
+    // The user's own past commands are used for training only with their opt-in.
+    classifier.train(learned: settings.learnFromMe ? await memory.learnedExamples() : const []);
     unawaited(apps.apps().then((list) {
       final labels = list.map((x) => x.label).where((l) => l.length > 2 && l.length < 20).toList()..sort((a, b) => a.length.compareTo(b.length));
       speechIn.keyterms.addAll(labels.take(30));
@@ -445,7 +446,7 @@ class JarvisOrchestrator extends ChangeNotifier {
       }
       final guess = classifier.classify(_currentUtterance);
       if (guess != null) {
-        debugPrint('LEO local-model: "$_currentUtterance" → ${guess.runtimeType}');
+        debugPrint('LEO local-model → ${guess.runtimeType}'); // never the user's words
         intent = guess;
       } else if (source != 'sarvam' && _sarvamReady && await _understandWithSarvam(raw, source)) {
         return; // Sarvam understood it and handed LEO clear commands
@@ -641,7 +642,14 @@ class JarvisOrchestrator extends ChangeNotifier {
       case ForgetEverythingIntent():
         _startTask('Delete conversation history', 'forget_all', TaskRoute.local, {});
       case KnowledgeIntent(:final question):
-        _startTask(_titleFrom(question), 'knowledge', TaskRoute.ai, {'text': question});
+        // A question about something the user told LEO ("what is my locker code") is answered from
+        // their encrypted on-phone memory — it is never sent to a cloud model.
+        final own = await _answerFromFacts(question);
+        if (own != null) {
+          await _say(own, kind: 'recall');
+        } else {
+          _startTask(_titleFrom(question), 'knowledge', TaskRoute.ai, {'text': question});
+        }
       case WriteIntent(:final kind, :final request):
         _startTask(_titleFrom(request), 'write', TaskRoute.ai, {'text': request, 'writeKind': kind.name});
       case UnknownIntent(:final text):
@@ -724,6 +732,24 @@ class JarvisOrchestrator extends ChangeNotifier {
       default:
         await _say('I\'m not sure how to help with that yet, $a.');
     }
+  }
+
+  /// "what is my locker code" → the fact the user asked LEO to remember, answered on the phone.
+  /// Only questions about the user's own things ("my …", "did I tell you") are matched, and only
+  /// when a stored fact shares the important words. Returns null when nothing fits.
+  Future<String?> _answerFromFacts(String question) async {
+    final q = question.toLowerCase();
+    if (!RegExp(r"\b(my|mine|i told|did i|i said|remember)\b").hasMatch(q)) return null;
+    final words = MemoryRepository.keywords(q).where((w) => !const {'what', 'which', 'where', 'when', 'tell'}.contains(w)).toSet();
+    if (words.isEmpty) return null;
+    (Fact, int)? best;
+    for (final f in await memory.facts()) {
+      final fw = MemoryRepository.keywords(f.text).toSet();
+      final overlap = words.intersection(fw).length;
+      if (overlap > 0 && (best == null || overlap > best.$2)) best = (f, overlap);
+    }
+    if (best == null || best.$2 < (words.length >= 2 ? 2 : 1)) return null;
+    return 'You told me: ${best.$1.text}, ${settings.address}.';
   }
 
   Future<void> _recall(String? topic) async {
@@ -1063,6 +1089,8 @@ class JarvisOrchestrator extends ChangeNotifier {
     final label = _kindToLabel[t.kind];
     final text = t.params['utterance'] as String?;
     if (label == null || text == null || text.isEmpty) return;
+    // Training on the user's own words needs their explicit, informed opt-in (Privacy & Security).
+    if (!settings.learnFromMe) return;
     classifier.add(text, label);
     unawaited(memory.addLearnedExample(text, label, source: t.route == TaskRoute.ai ? 'ai' : 'local'));
   }
@@ -1133,7 +1161,12 @@ class JarvisOrchestrator extends ChangeNotifier {
 
   String _friendlyError(Object e) {
     final a = settings.address;
-    if (e is AiNotConfigured) return 'That needs my OpenAI brain, $a — add the OpenAI key to lib/.env and rebuild. Everyday tasks still work.';
+    if (e is AiNotConfigured) {
+      return settings.cloudBrainConsent != true
+          ? 'That needs my OpenAI brain, $a, which you\'ve kept switched off — so nothing was sent. '
+              'Everyday tasks still work on the phone; you can allow OpenAI in Settings → Privacy & Security.'
+          : 'That needs my OpenAI brain, $a — add the OpenAI key to lib/.env and rebuild. Everyday tasks still work.';
+    }
     if ((e is GeminiException && (e.status == 429 || e.message.toLowerCase().contains('quota'))) ||
         '$e'.contains('credits are used up') || '$e'.contains('rate-limiting')) {
       return 'My OpenAI credits are used up for now, $a. Everyday tasks — apps, calls, music, messages — still work '
@@ -1434,6 +1467,8 @@ class JarvisOrchestrator extends ChangeNotifier {
       brain: openAiBrain,
       apiKey: settings.secret(SecretKey.openai)!,
       model: model,
+      vault: memory.vault,
+      remember: settings.learnFromMe,
       hooks: ScreenAgentHooks(
         checkpoint: () => tr.control.checkpoint(),
         isSensitive: isSensitiveLabel,
@@ -3170,17 +3205,24 @@ class JarvisOrchestrator extends ChangeNotifier {
     tr.updateStep('approval', status: StepStatus.done);
     tr.setState(AgentState.running);
     tr.updateStep('delete', status: StepStatus.running);
-    await memory.deleteAllConversations();
-    await memory.deleteAllFacts();
+    await wipeAllData();
     tr.updateStep('delete', status: StepStatus.done);
+    _tracker = null;
+    await _say('Done, ${settings.address}. Everything I stored has been deleted, and the keys that protected it were destroyed.');
+    return 'Deleted';
+  }
+
+  /// Deletes everything LEO stored about the user (conversations, tasks, facts, learned phrases,
+  /// privacy ledger, usage, screen-agent hints) and destroys the encryption keys (crypto-shredding).
+  Future<void> wipeAllData() async {
+    await memory.deleteEverything();
+    await ScreenAgent.clearHints();
+    classifier.train();
     sessionId = await memory.resumeOrStartSession();
     messages = [];
     previousSessionTail = [];
-    _tracker = null;
     task = null;
     notifyListeners();
-    await _say('Done, ${settings.address}. All conversation history has been deleted.');
-    return 'Deleted';
   }
 
   // ---- runner: knowledge (AI)
@@ -3368,7 +3410,7 @@ class JarvisOrchestrator extends ChangeNotifier {
       answer: r.answer == null ? null : red.restore(r.answer!),
       clarify: r.clarify == null ? null : red.restore(r.clarify!),
     );
-    debugPrint('LEO cloud-understand ($provider): ${res.commands} answer=${res.answer != null} · ${res.usageLine}');
+    debugPrint('LEO cloud-understand ($provider): ${res.commands.length} step(s), answer=${res.answer != null}'); // no content
     await _store('user', raw, source: source, kind: 'conversation', route: provider);
     if (res.commands.isEmpty) {
       // Token counts stay in Analytics only (not shown in the conversation).

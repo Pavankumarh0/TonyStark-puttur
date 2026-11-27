@@ -52,7 +52,9 @@ class ApprovalGate {
       h ^= b;
       h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF;
     }
-    return '${h.toRadixString(16)}:${canonical.length}';
+    // The exact canonical form is part of the fingerprint, so approval is bound to the precise
+    // action + recipient + content (no hash collisions possible); the hash just makes logs/UI short.
+    return '${h.toRadixString(16)}:$canonical';
   }
 
   /// Registers a new request; any previous approval (pending or granted) becomes invalid.

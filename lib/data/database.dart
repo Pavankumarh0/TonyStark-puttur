@@ -1,7 +1,8 @@
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
-/// Local, persistent store. Nothing here leaves the device.
+/// Local, persistent store in the app's private sandbox. Nothing here leaves the device.
+/// Private columns hold AES-256-GCM ciphertext written by [MemoryRepository] (see vault.dart).
 class JarvisDatabase {
   static const _version = 3;
   Database? _db;
@@ -42,7 +43,11 @@ class JarvisDatabase {
     _db = await openDatabase(
       p.join(dir, 'jarvis.db'),
       version: _version,
-      onConfigure: (d) => d.execute('PRAGMA foreign_keys = ON'),
+      onConfigure: (d) async {
+        await d.execute('PRAGMA foreign_keys = ON');
+        // Deleted rows are overwritten with zeros instead of lingering in free pages.
+        await d.rawQuery('PRAGMA secure_delete = ON');
+      },
       onUpgrade: (d, from, to) async {
         if (from < 2) await _createLearned(d);
         if (from < 3) await _createCloudLog(d);

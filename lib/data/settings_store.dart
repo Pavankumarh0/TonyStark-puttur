@@ -38,6 +38,9 @@ class SettingsStore extends ChangeNotifier {
   }
 
   String? secret(SecretKey k) {
+    // Consent gate: without the user's explicit OK, the OpenAI key is "absent", so nothing is ever
+    // sent there — LEO falls back to its on-device rules and the on-device Qwen model.
+    if (k == SecretKey.openai && !cloudBrainAllowed) return null;
     final o = _secrets[k];
     if (o != null && o.isNotEmpty) return o;
     // First word only: tolerates notes written after the key on the same .env line.
@@ -53,6 +56,7 @@ class SettingsStore extends ChangeNotifier {
   bool isBuiltIn(SecretKey k) => !(_secrets[k]?.isNotEmpty ?? false) && _builtIn[k]!.isNotEmpty;
 
   String maskedSecret(SecretKey k) {
+    if (k == SecretKey.openai && !cloudBrainAllowed) return 'Off — OpenAI is not allowed (Privacy & Security)';
     final v = secret(k);
     if (v == null || v.isEmpty) return 'Not set — add it to lib/.env and rebuild';
     final m = v.length <= 6 ? '••••' : '••••${v.substring(v.length - 4)}';
@@ -127,6 +131,32 @@ class SettingsStore extends ChangeNotifier {
   /// Let OpenAI understand free-form speech and turn it into clear LEO commands.
   bool get sarvamUnderstanding => _prefs.getBool('sarvam_understanding') ?? true;
   set sarvamUnderstanding(bool v) => _setB('sarvam_understanding', v);
+
+  // ------------------------------------------------------------------ consent & retention
+  /// null = never asked. OpenAI is used only after an explicit "Allow".
+  bool? get cloudBrainConsent => _prefs.getBool('consent_cloud_brain_v1');
+  set cloudBrainConsent(bool? v) {
+    if (v == null) {
+      _prefs.remove('consent_cloud_brain_v1');
+    } else {
+      _prefs.setBool('consent_cloud_brain_v1', v);
+    }
+    notifyListeners();
+  }
+
+  bool get cloudBrainAllowed => cloudBrainConsent == true;
+
+  /// Let the on-device intent model learn from this user's own commands (stored encrypted, never
+  /// uploaded). Off unless the user opts in.
+  bool get learnFromMe => _prefs.getBool('consent_learn_v1') ?? false;
+  set learnFromMe(bool v) => _setB('consent_learn_v1', v);
+
+  /// Conversations, tasks, ledger and learned phrases older than this are deleted. 0 = keep.
+  int get retentionDays => _prefs.getInt('retention_days') ?? 90;
+  set retentionDays(int v) {
+    _prefs.setInt('retention_days', v);
+    notifyListeners();
+  }
 
   bool get followUpListening => _prefs.getBool('follow_up_listening') ?? true;
   set followUpListening(bool v) => _setB('follow_up_listening', v);

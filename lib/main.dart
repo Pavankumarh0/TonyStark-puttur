@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -7,6 +8,7 @@ import 'data/context_builder.dart';
 import 'data/database.dart';
 import 'data/memory_repository.dart';
 import 'data/settings_store.dart';
+import 'data/vault.dart';
 import 'device/app_resolver.dart';
 import 'device/device_bridge.dart';
 import 'orchestrator/jarvis_orchestrator.dart';
@@ -26,11 +28,19 @@ Future<void> main() async {
     statusBarIconBrightness: Brightness.light,
   ));
 
+  // Release builds log nothing at all (no prompts, conversations or credentials in logcat).
+  if (kReleaseMode) debugPrint = (String? message, {int? wrapWidth}) {};
+
   final settings = SettingsStore();
   await settings.load();
+  // Unlock encryption at rest (Keystore-wrapped AES-256-GCM keys) BEFORE touching stored data.
+  final vault = NativeVault();
+  await vault.init();
   final db = JarvisDatabase();
   await db.open();
-  final memory = MemoryRepository(db);
+  final memory = MemoryRepository(db, vault);
+  await memory.migratePlaintext(); // one-time: encrypt anything stored before encryption existed
+  if (settings.retentionDays > 0) await memory.purgeOlderThan(settings.retentionDays);
   final sarvam = SarvamClient();
   final mic = MicEngine();
   final speechIn = SpeechInput(mic, sarvam, settings, memory);

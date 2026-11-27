@@ -1,7 +1,10 @@
 import 'dart:convert';
 
+import 'package:sqflite/sqflite.dart' show ConflictAlgorithm;
+
 import '../core/task/task_models.dart';
 import 'database.dart';
+import 'vault.dart';
 
 class StoredMessage {
   final int id;
@@ -89,9 +92,37 @@ class UsageTotals {
 }
 
 /// Persistent conversation history, task history, explicit facts and usage logs.
+/// Every private field is encrypted with AES-256-GCM before it reaches SQLite (see [Vault]);
+/// the search index holds only keyed HMAC tokens. Counters/timestamps stay in the clear.
 class MemoryRepository {
   final JarvisDatabase _database;
-  MemoryRepository(this._database);
+  final Vault vault;
+  MemoryRepository(this._database, this.vault);
+
+  // Associated Data per column: a ciphertext only decrypts in the field it was written to.
+  static const aMsg = 'messages.text', aTitle = 'sessions.title', aTaskTitle = 'tasks.title', aSteps = 'tasks.steps',
+      aParams = 'tasks.params', aResult = 'tasks.result', aFact = 'facts.text', aLearned = 'learned.text',
+      aCloud = 'cloud_log.sent_text';
+
+  /// Every keyword of [text] (for the search index).
+  static List<String> indexWords(String text) => text
+      .toLowerCase()
+      .replaceAll(RegExp(r"[^a-z0-9 ]"), ' ')
+      .split(RegExp(r'\s+'))
+      .where((w) => w.length > 2 && !_stop.contains(w))
+      .toSet()
+      .toList();
+
+  /// Search tokens for [text]: every keyword, blinded with the vault's HMAC key.
+  Future<String> _index(String text) async => (await vault.blind(indexWords(text))).join(' ');
+
+  Future<List<StoredMessage>> _decryptMessages(List<Map<String, Object?>> rows) async {
+    final plain = await vault.open([for (final r in rows) r['text'] as String?], aMsg);
+    return [
+      for (var i = 0; i < rows.length; i++)
+        if (plain[i] != null) StoredMessage.fromRow({...rows[i], 'text': plain[i]})
+    ];
+  }
 
   static const sessionGap = Duration(minutes: 30);
 
@@ -120,17 +151,19 @@ class MemoryRepository {
         (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS cnt,
         (SELECT text FROM messages m WHERE m.session_id = s.id AND m.role = 'user' ORDER BY created_at LIMIT 1) AS preview
       FROM sessions s ORDER BY s.last_active_at DESC LIMIT ?''', [limit]);
+    final live = rows.where((r) => (r['cnt'] as int) > 0).toList();
+    final titles = await vault.open([for (final r in live) r['title'] as String?], aTitle);
+    final previews = await vault.open([for (final r in live) r['preview'] as String?], aMsg);
     return [
-      for (final r in rows)
-        if ((r['cnt'] as int) > 0)
-          SessionSummary(
-            r['id'] as int,
-            DateTime.fromMillisecondsSinceEpoch(r['started_at'] as int),
-            DateTime.fromMillisecondsSinceEpoch(r['last_active_at'] as int),
-            r['title'] as String?,
-            r['cnt'] as int,
-            r['preview'] as String?,
-          )
+      for (var i = 0; i < live.length; i++)
+        SessionSummary(
+          live[i]['id'] as int,
+          DateTime.fromMillisecondsSinceEpoch(live[i]['started_at'] as int),
+          DateTime.fromMillisecondsSinceEpoch(live[i]['last_active_at'] as int),
+          titles[i],
+          live[i]['cnt'] as int,
+          previews[i],
+        )
     ];
   }
 
@@ -154,18 +187,20 @@ class MemoryRepository {
   }) async {
     final db = _database.db;
     final now = DateTime.now().millisecondsSinceEpoch;
+    final sealed = await vault.seal1(text, aMsg);
+    final index = await _index(text);
     late int id;
     await db.transaction((tx) async {
       id = await tx.insert('messages', {
         'session_id': sessionId,
         'role': role,
-        'text': text,
+        'text': sealed,
         'created_at': now,
         'source': source,
         'route': route,
         'kind': kind,
       });
-      await tx.insert('messages_fts', {'docid': id, 'text': text});
+      await tx.insert('messages_fts', {'docid': id, 'text': index});
       await tx.update('sessions', {'last_active_at': now}, where: 'id = ?', whereArgs: [sessionId]);
     });
     return StoredMessage(
@@ -176,7 +211,7 @@ class MemoryRepository {
   Future<List<StoredMessage>> messagesOf(int sessionId, {int? limit}) async {
     final rows = await _database.db.query('messages',
         where: 'session_id = ?', whereArgs: [sessionId], orderBy: 'created_at DESC, id DESC', limit: limit);
-    return rows.map(StoredMessage.fromRow).toList().reversed.toList();
+    return (await _decryptMessages(rows)).reversed.toList();
   }
 
   /// Messages from sessions other than [currentSessionId], newest first.
@@ -193,7 +228,7 @@ class MemoryRepository {
     }
     final rows = await _database.db.query('messages',
         where: where.toString(), whereArgs: args, orderBy: 'created_at DESC', limit: limit);
-    return rows.map(StoredMessage.fromRow).toList();
+    return _decryptMessages(rows);
   }
 
   static const _stop = {
@@ -217,13 +252,14 @@ class MemoryRepository {
   Future<List<StoredMessage>> search(String query, {int limit = 30, int? excludeSessionId}) async {
     final kws = keywords(query);
     if (kws.isEmpty) return [];
-    final match = kws.map((k) => '$k*').join(' OR ');
+    // Exact-word match on blinded tokens (the index holds no readable words, so no prefix search).
+    final match = (await vault.blind(kws)).join(' OR ');
     final rows = await _database.db.rawQuery('''
       SELECT m.* FROM messages_fts f JOIN messages m ON m.id = f.docid
       WHERE messages_fts MATCH ? ${excludeSessionId != null ? 'AND m.session_id != ?' : ''}
       ORDER BY m.created_at DESC LIMIT ?''',
         [match, if (excludeSessionId != null) excludeSessionId, limit]);
-    final list = rows.map(StoredMessage.fromRow).toList();
+    final list = await _decryptMessages(rows);
     // Rank by keyword overlap, then recency.
     int score(StoredMessage m) {
       final t = m.text.toLowerCase();
@@ -248,33 +284,46 @@ class MemoryRepository {
   }
 
   // ------------------------------------------------------------------ tasks
-  Future<int> insertTask(TaskSnapshot t, int? sessionId) => _database.db.insert('tasks', {
+  Future<Map<String, Object?>> _sealTask(TaskSnapshot t) async => {
+        'title': await vault.seal1(t.title, aTaskTitle),
+        'steps_json': await vault.seal1(jsonEncode(t.steps.map((s) => s.toJson()).toList()), aSteps),
+        'params_json': await vault.seal1(jsonEncode(t.params), aParams),
+        'result': await vault.seal1(t.result, aResult),
+      };
+
+  Future<int> insertTask(TaskSnapshot t, int? sessionId) async => _database.db.insert('tasks', {
         'session_id': sessionId,
-        'title': t.title,
+        ...await _sealTask(t),
         'kind': t.kind,
         'state': t.state.name,
         'route': t.route.name,
-        'steps_json': jsonEncode(t.steps.map((s) => s.toJson()).toList()),
-        'params_json': jsonEncode(t.params),
-        'result': t.result,
         'created_at': t.createdAt.millisecondsSinceEpoch,
         'updated_at': t.updatedAt.millisecondsSinceEpoch,
       });
 
-  Future<void> updateTask(TaskSnapshot t) => _database.db.update(
+  Future<void> updateTask(TaskSnapshot t) async => _database.db.update(
         'tasks',
         {
-          'title': t.title,
+          ...await _sealTask(t),
           'state': t.state.name,
           'route': t.route.name,
-          'steps_json': jsonEncode(t.steps.map((s) => s.toJson()).toList()),
-          'params_json': jsonEncode(t.params),
-          'result': t.result,
           'updated_at': t.updatedAt.millisecondsSinceEpoch,
         },
         where: 'id = ?',
         whereArgs: [t.id],
       );
+
+  Future<List<TaskSnapshot>> _decryptTasks(List<Map<String, Object?>> rows) async {
+    final ti = await vault.open([for (final r in rows) r['title'] as String?], aTaskTitle);
+    final st = await vault.open([for (final r in rows) r['steps_json'] as String?], aSteps);
+    final pa = await vault.open([for (final r in rows) r['params_json'] as String?], aParams);
+    final re = await vault.open([for (final r in rows) r['result'] as String?], aResult);
+    return [
+      for (var i = 0; i < rows.length; i++)
+        if (ti[i] != null && st[i] != null && pa[i] != null)
+          _taskFromRow({...rows[i], 'title': ti[i], 'steps_json': st[i], 'params_json': pa[i], 'result': re[i]})
+    ];
+  }
 
   TaskSnapshot _taskFromRow(Map<String, Object?> r) => TaskSnapshot(
         id: r['id'] as int,
@@ -293,7 +342,7 @@ class MemoryRepository {
 
   Future<List<TaskSnapshot>> tasks({int limit = 50}) async {
     final rows = await _database.db.query('tasks', orderBy: 'updated_at DESC', limit: limit);
-    return rows.map(_taskFromRow).toList();
+    return _decryptTasks(rows);
   }
 
   /// Tasks that were stopped/paused/left waiting — candidates for "continue where you stopped".
@@ -302,7 +351,7 @@ class MemoryRepository {
         where: "state IN ('interrupted','paused','waitingForApproval','running','planning','understanding')",
         orderBy: 'updated_at DESC',
         limit: 10);
-    return rows.map(_taskFromRow).toList();
+    return _decryptTasks(rows);
   }
 
   /// After an app restart nothing can still be executing: mark leftovers as interrupted.
@@ -312,14 +361,16 @@ class MemoryRepository {
   // ------------------------------------------------------------------ facts (explicit, user-approved)
   Future<List<Fact>> facts() async {
     final rows = await _database.db.query('facts', orderBy: 'created_at DESC');
+    final texts = await vault.open([for (final r in rows) r['text'] as String?], aFact);
     return [
-      for (final r in rows)
-        Fact(r['id'] as int, r['text'] as String, DateTime.fromMillisecondsSinceEpoch(r['created_at'] as int))
+      for (var i = 0; i < rows.length; i++)
+        if (texts[i] != null)
+          Fact(rows[i]['id'] as int, texts[i]!, DateTime.fromMillisecondsSinceEpoch(rows[i]['created_at'] as int))
     ];
   }
 
-  Future<void> addFact(String text) =>
-      _database.db.insert('facts', {'text': text, 'created_at': DateTime.now().millisecondsSinceEpoch});
+  Future<void> addFact(String text) async => _database.db
+      .insert('facts', {'text': await vault.seal1(text, aFact), 'created_at': DateTime.now().millisecondsSinceEpoch});
 
   Future<void> deleteFact(int id) => _database.db.delete('facts', where: 'id = ?', whereArgs: [id]);
   Future<void> deleteAllFacts() => _database.db.delete('facts');
@@ -328,16 +379,21 @@ class MemoryRepository {
   /// Stores a (text, label) pair so the on-device intent model handles it locally next time.
   Future<void> addLearnedExample(String text, String label, {required String source}) async {
     final db = _database.db;
-    final exists = await db.query('learned_examples', where: 'text = ? AND label = ?', whereArgs: [text, label], limit: 1);
-    if (exists.isNotEmpty) return;
+    // Ciphertexts differ every time, so de-duplicate on the decrypted values.
+    if ((await learnedExamples()).any((e) => e.$1 == text && e.$2 == label)) return;
     await db.insert('learned_examples', {
-      'text': text, 'label': label, 'source': source, 'created_at': DateTime.now().millisecondsSinceEpoch,
+      'text': await vault.seal1(text, aLearned), 'label': label, 'source': source,
+      'created_at': DateTime.now().millisecondsSinceEpoch,
     });
   }
 
   Future<List<(String, String)>> learnedExamples() async {
     final rows = await _database.db.query('learned_examples', orderBy: 'created_at DESC', limit: 2000);
-    return [for (final r in rows) (r['text'] as String, r['label'] as String)];
+    final texts = await vault.open([for (final r in rows) r['text'] as String?], aLearned);
+    return [
+      for (var i = 0; i < rows.length; i++)
+        if (texts[i] != null) (texts[i]!, rows[i]['label'] as String)
+    ];
   }
 
   Future<int> learnedCount({String? source}) async {
@@ -386,13 +442,13 @@ class MemoryRepository {
     String? currency,
     int? latencyMs,
     required bool ok,
-  }) =>
+  }) async =>
       _database.db.insert('cloud_log', {
         'created_at': DateTime.now().millisecondsSinceEpoch,
         'provider': provider,
         'model': model,
         'purpose': purpose,
-        'sent_text': sentText,
+        'sent_text': await vault.seal1(sentText, aCloud),
         'masked_count': maskedCount,
         'input_tokens': input,
         'output_tokens': output,
@@ -403,8 +459,11 @@ class MemoryRepository {
         'ok': ok ? 1 : 0,
       });
 
-  Future<List<Map<String, Object?>>> cloudLog({int limit = 50}) =>
-      _database.db.query('cloud_log', orderBy: 'created_at DESC', limit: limit);
+  Future<List<Map<String, Object?>>> cloudLog({int limit = 50}) async {
+    final rows = await _database.db.query('cloud_log', orderBy: 'created_at DESC', limit: limit);
+    final sent = await vault.open([for (final r in rows) r['sent_text'] as String?], aCloud);
+    return [for (var i = 0; i < rows.length; i++) {...rows[i], 'sent_text': sent[i] ?? '(unreadable)'}];
+  }
 
   Future<void> clearCloudLog() => _database.db.delete('cloud_log');
 
@@ -450,6 +509,89 @@ class MemoryRepository {
       ttsChars: i(v['tu']),
       tokensByPurpose: {for (final r in byPurpose) r['purpose'] as String: i(r['tot'])},
     );
+  }
+
+  // ------------------------------------------------------------------ one-time migration
+  /// Encrypts rows written before encryption existed, rebuilds the search index with blinded
+  /// tokens, then VACUUMs so the old plaintext is not left behind in free database pages.
+  /// Idempotent: does nothing once every value is sealed. Returns the number of values encrypted.
+  Future<int> migratePlaintext() async {
+    final db = _database.db;
+    var changed = 0;
+    const cols = <(String, String, String)>[
+      ('messages', 'text', aMsg), ('sessions', 'title', aTitle), ('tasks', 'title', aTaskTitle),
+      ('tasks', 'steps_json', aSteps), ('tasks', 'params_json', aParams), ('tasks', 'result', aResult),
+      ('facts', 'text', aFact), ('learned_examples', 'text', aLearned), ('cloud_log', 'sent_text', aCloud),
+    ];
+    for (final (table, col, aad) in cols) {
+      final rows = await db.rawQuery("SELECT id, $col v FROM $table WHERE $col IS NOT NULL AND $col NOT LIKE 'v1:%'");
+      if (rows.isEmpty) continue;
+      final sealed = await vault.seal([for (final r in rows) r['v'] as String], aad);
+      await db.transaction((tx) async {
+        for (var i = 0; i < rows.length; i++) {
+          await tx.update(table, {col: sealed[i]}, where: 'id = ?', whereArgs: [rows[i]['id']]);
+        }
+      });
+      changed += rows.length;
+    }
+    await db.execute('CREATE TABLE IF NOT EXISTS security_meta(k TEXT PRIMARY KEY, v TEXT)');
+    final done = await db.query('security_meta', where: 'k = ?', whereArgs: ['search_index'], limit: 1);
+    if (changed > 0 || done.isEmpty || done.first['v'] != 'blind-v1') {
+      await rebuildSearchIndex();
+      await db.insert('security_meta', {'k': 'search_index', 'v': 'blind-v1'}, conflictAlgorithm: ConflictAlgorithm.replace);
+      changed++;
+    }
+    if (changed > 0) await db.execute('VACUUM'); // drop old plaintext pages from the file
+    return changed;
+  }
+
+  /// Recreates the full-text index from scratch with blinded tokens. (Deleting rows from an FTS4
+  /// index leaves the old terms inside its segment b-trees until they merge — a fresh table doesn't.)
+  Future<void> rebuildSearchIndex() async {
+    final db = _database.db;
+    final rows = await db.rawQuery('SELECT id, text FROM messages');
+    final plain = await vault.open([for (final r in rows) r['text'] as String?], aMsg);
+    final tokens = <String>[];
+    for (final p in plain) {
+      tokens.add(p == null ? '' : await _index(p));
+    }
+    await db.transaction((tx) async {
+      await tx.execute('DROP TABLE IF EXISTS messages_fts');
+      await tx.execute('CREATE VIRTUAL TABLE messages_fts USING fts4(text)');
+      for (var i = 0; i < rows.length; i++) {
+        if (tokens[i].isNotEmpty) await tx.insert('messages_fts', {'docid': rows[i]['id'], 'text': tokens[i]});
+      }
+    });
+  }
+
+  // ------------------------------------------------------------------ retention & deletion
+  /// Deletes conversations, tasks, the privacy ledger and learned phrases older than [days].
+  /// Explicit "remember this" facts are kept until the user deletes them. Returns rows removed.
+  Future<int> purgeOlderThan(int days) async {
+    if (days <= 0) return 0;
+    final cutoff = DateTime.now().subtract(Duration(days: days)).millisecondsSinceEpoch;
+    var n = 0;
+    await _database.db.transaction((tx) async {
+      await tx.rawDelete('DELETE FROM messages_fts WHERE docid IN (SELECT id FROM messages WHERE created_at < ?)', [cutoff]);
+      n += await tx.delete('messages', where: 'created_at < ?', whereArgs: [cutoff]);
+      await tx.rawDelete('DELETE FROM sessions WHERE id NOT IN (SELECT DISTINCT session_id FROM messages) AND last_active_at < ?', [cutoff]);
+      n += await tx.delete('tasks', where: 'updated_at < ?', whereArgs: [cutoff]);
+      n += await tx.delete('cloud_log', where: 'created_at < ?', whereArgs: [cutoff]);
+      n += await tx.delete('learned_examples', where: 'created_at < ?', whereArgs: [cutoff]);
+    });
+    return n;
+  }
+
+  /// Everything LEO stored about the user, deleted; then the encryption keys are destroyed and
+  /// replaced (crypto-shredding), so even leftovers in free disk pages can never be decrypted.
+  Future<void> deleteEverything() async {
+    await _database.db.transaction((tx) async {
+      for (final t in ['messages_fts', 'messages', 'sessions', 'tasks', 'facts', 'learned_examples', 'cloud_log', 'token_usage', 'voice_usage']) {
+        await tx.delete(t);
+      }
+    });
+    await _database.db.execute('VACUUM');
+    await vault.wipe();
   }
 
   Future<void> resetUsage() async {

@@ -24,6 +24,7 @@ import java.util.concurrent.Executors
 object DeviceChannel {
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
+    private val vaultIo = Executors.newSingleThreadExecutor()
     private var sink: EventChannel.EventSink? = null
     private lateinit var app: Context
 
@@ -31,6 +32,27 @@ object DeviceChannel {
         app = context.applicationContext
         val messenger = engine.dartExecutor.binaryMessenger
         MethodChannel(messenger, "jarvis/device").setMethodCallHandler { call, result -> handle(call, result) }
+        // Encryption at rest: own channel + own thread, so crypto never waits behind screen actions.
+        MethodChannel(messenger, "jarvis/vault").setMethodCallHandler { call, result ->
+            vaultIo.execute {
+                try {
+                    @Suppress("UNCHECKED_CAST")
+                    val v: Any? = when (call.method) {
+                        "init" -> Vault.init(app)
+                        "status" -> Vault.status()
+                        "seal" -> Vault.seal(call.argument<List<String?>>("values") ?: emptyList(), call.argument<String>("aad") ?: "")
+                        "open" -> Vault.open(call.argument<List<String?>>("values") ?: emptyList(), call.argument<String>("aad") ?: "")
+                        "blind" -> Vault.blind(call.argument<List<String>>("words") ?: emptyList())
+                        "wipe" -> { Vault.wipe(app); Vault.init(app) }
+                        "selfTest" -> Vault.selfTest(app)
+                        else -> { main.post { result.notImplemented() }; return@execute }
+                    }
+                    main.post { result.success(v) }
+                } catch (e: Exception) {
+                    main.post { result.error("vault_error", e.javaClass.simpleName, null) } // never the message: it may echo data
+                }
+            }
+        }
         EventChannel(messenger, "jarvis/mic_frames").setStreamHandler(MicStreamer)
         EventChannel(messenger, "jarvis/events").setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) { sink = events }

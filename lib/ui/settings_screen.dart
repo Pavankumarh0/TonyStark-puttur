@@ -8,6 +8,7 @@ import '../data/settings_store.dart';
 import '../device/device_bridge.dart';
 import '../orchestrator/jarvis_orchestrator.dart';
 import 'permissions_screen.dart';
+import 'privacy_screen.dart';
 import 'theme.dart';
 
 class SettingsScreen extends StatelessWidget {
@@ -84,6 +85,22 @@ class SettingsScreen extends StatelessWidget {
           onTap: () => Navigator.of(
             context,
           ).push(MaterialPageRoute(builder: (_) => const PermissionsScreen())),
+        ),
+        const SizedBox(height: 10),
+        ListTile(
+          tileColor: JColors.panel,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: JColors.line),
+          ),
+          leading: const Icon(Icons.lock_outline, color: JColors.cyan),
+          title: const Text('Privacy & Security'),
+          subtitle: const Text(
+            'Encryption, where your data goes, consent, retention, delete everything',
+            style: TextStyle(color: JColors.dim),
+          ),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PrivacyScreen())),
         ),
         const SizedBox(height: 20),
         _label('API KEYS (built into the app — tap only to override)'),
