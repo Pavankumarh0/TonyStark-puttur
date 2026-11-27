@@ -431,6 +431,11 @@ class JarvisOrchestrator extends ChangeNotifier {
     }
     var intent = engine.parse(raw, ctx: _ctx);
     // Rules didn't match → try the on-device trained model before ever considering AI.
+    // A step planned by the brain that no built-in command covers ("start the stopwatch") is done on
+    // screen by the agent — never silently dropped.
+    if (source == 'sarvam' && (intent is UnknownIntent || intent is KnowledgeIntent) && _freeTextWait == null && _choiceWait == null && _approvalWait == null) {
+      intent = PhoneTaskIntent(_currentUtterance);
+    }
     if (intent is UnknownIntent && _freeTextWait == null && _choiceWait == null && _approvalWait == null) {
       // Several steps / mixed language / long → let the brain plan it; the small on-device
       // classifier only ever picks ONE action and would drop the rest.
@@ -2006,9 +2011,9 @@ class JarvisOrchestrator extends ChangeNotifier {
     }
     final files = await tr.step('search', () => device.findFiles(q, exts: exts)) ?? const [];
     if (files.isEmpty) {
-      tr.updateStep('search', detail: 'No matches');
-      await _say('I couldn\'t find any ${exts.first.toUpperCase()} named like "$q" on your phone, $a.');
-      return 'Not found';
+      tr.updateStep('search', status: StepStatus.failed, detail: 'No matches');
+      // Report it as a failure (not "completed"): nothing was found or opened.
+      throw Exception('I couldn\'t find any ${exts.first.toUpperCase()} named like "$q" on your phone.');
     }
     tr.updateStep('search', detail: '${files.length} found');
     var f = files.first;

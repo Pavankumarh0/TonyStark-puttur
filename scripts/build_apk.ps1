@@ -31,6 +31,6 @@ if ($LASTEXITCODE -ne 0) { throw "flutter build failed" }
 $apk = if ($Release) { "build\app\outputs\flutter-apk\app-release.apk" } else { "build\app\outputs\flutter-apk\app-debug.apk" }
 $adb = Join-Path $env:LOCALAPPDATA "Android\Sdk\platform-tools\adb.exe"
 & $adb install -r $apk
-& $adb shell am force-stop com.jarvis.jarvis
+# (no force-stop: Android removes a force-stopped app from the enabled accessibility services)
 & $adb shell am start -n com.jarvis.jarvis/.MainActivity
 Remove-Item $definesFile   # don't leave keys lying around
