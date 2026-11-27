@@ -32,7 +32,7 @@ class LocalAgentBrain {
 
   /// "search for beach photos in gallery" → "beach photos"
   static String? searchQuery(String goal) {
-    final m = RegExp(r"\b(?:search|look|find|look up)(?:\s+(?:for|up))?\s+(.+?)(?:\s+(?:in|on|inside|using)\s+(?:the\s+|my\s+)?[a-z ]+)?$",
+    final m = RegExp(r"\b(?:search|look|find|look up|show me|show)(?:\s+(?:for|up))?\s+(.+?)(?:\s+(?:in|on|inside|using)\s+(?:the\s+|my\s+)?[a-z ]+)?$",
             caseSensitive: false)
         .firstMatch(goal.trim());
     final q = m?.group(1)?.replaceAll(RegExp(r'^(my|the)\s+', caseSensitive: false), '').trim();
@@ -70,10 +70,40 @@ class LocalAgentBrain {
       }
     }
 
+    // ---- Rule: install from Play Store — tap the matching result, then Install (approval is enforced by LEO).
+    final inst = RegExp(r'^install\s+(.+)$', caseSensitive: false).firstMatch(goal.trim());
+    if (inst != null) {
+      final installBtn = els.where((e) => e.flags.contains('tap') && RegExp(r'^install$', caseSensitive: false).hasMatch(e.label.split(' | ').first.trim())).firstOrNull;
+      if (installBtn != null) {
+        if (_did(history, 'tap') && history.last.contains('Tap "Install"')) {
+          return {'done': true, 'summary': 'Installing ${inst.group(1)}. It will appear on your home screen when it finishes.', 'how': 'rule'};
+        }
+        return {'action': {'type': 'tap', 'index': installBtn.index}, 'describe': 'Tap "Install"', 'how': 'rule'};
+      }
+      final opened = els.any((e) => RegExp(r'^(open|uninstall|update)$', caseSensitive: false).hasMatch(e.label.split(' | ').first.trim()));
+      if (opened && history.any((h) => h.contains('Tap "Install"'))) {
+        return {'done': true, 'summary': '${inst.group(1)} is installing or installed.', 'how': 'rule'};
+      }
+      if (opened) return {'done': true, 'summary': '${inst.group(1)} is already installed.', 'how': 'rule'};
+    }
+
+    // ---- Rule: shopping "add to cart" button visible.
+    if (RegExp(r'\b(add .* to (the |my )?cart|add to cart)\b', caseSensitive: false).hasMatch(goal)) {
+      final cart = els.where((e) => e.flags.contains('tap') && RegExp(r'add to (cart|basket)', caseSensitive: false).hasMatch(e.label)).firstOrNull;
+      if (cart != null && !history.any((h) => h.contains('Add to')))
+        return {'action': {'type': 'tap', 'index': cart.index}, 'describe': 'Tap "Add to cart"', 'how': 'rule'};
+    }
+
     // ---- Rule 2: search flow.
     final q = searchQuery(goal);
     if (q != null) {
       if (_did(history, 'submit')) {
+        // "open/show the … photo": after searching, open the first result.
+        if (RegExp(r'\b(and|then)\s+(open|show)\b|\b(open|show) (it|the (first|photo|image|picture|result|one))', caseSensitive: false).hasMatch(goal) &&
+            !history.any((h) => h.contains('Open the first result'))) {
+          final first = els.where((e) => e.flags.contains('tap') && RegExp(r'image|photo|picture|video|thumbnail', caseSensitive: false).hasMatch('${e.kind} ${e.label}')).firstOrNull;
+          if (first != null) return {'action': {'type': 'tap', 'index': first.index}, 'describe': 'Open the first result', 'how': 'rule'};
+        }
         return {'done': true, 'summary': 'Here are the results for "$q".', 'how': 'rule'};
       }
       final input = els.where((e) => e.flags.contains('input')).firstOrNull;

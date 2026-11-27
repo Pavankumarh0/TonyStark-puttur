@@ -95,6 +95,10 @@ class SettingsStore extends ChangeNotifier {
   String get agentBrain => _prefs.getString('agent_brain') ?? 'local';
   set agentBrain(String v) => _set('agent_brain', v);
 
+  /// Understand Hindi/Kannada/code-mixed speech by translating it to English (Sarvam translate mode).
+  bool get mixedLanguage => _prefs.getBool('mixed_language') ?? true;
+  set mixedLanguage(bool v) => _setB('mixed_language', v);
+
   bool get listeningEnabled => _prefs.getBool('listening_enabled') ?? false;
   set listeningEnabled(bool v) => _setB('listening_enabled', v);
 

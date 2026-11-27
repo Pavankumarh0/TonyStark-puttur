@@ -105,6 +105,13 @@ class SettingsScreen extends StatelessWidget {
           ),
         ),
         SwitchListTile(
+          value: s.mixedLanguage,
+          onChanged: (v) => s.mixedLanguage = v,
+          title: const Text('Understand Hindi / Kannada / mixed speech'),
+          subtitle: const Text('Translates what you say into English before LEO acts. Turn off if names get mistranslated.',
+              style: TextStyle(color: JColors.dim)),
+        ),
+        SwitchListTile(
           value: s.useDeviceTts,
           onChanged: (v) => s.useDeviceTts = v,
           title: const Text('Use phone\'s offline voice instead'),

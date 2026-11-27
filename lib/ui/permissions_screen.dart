@@ -15,7 +15,7 @@ class PermissionsScreen extends StatefulWidget {
 
 class _PermissionsScreenState extends State<PermissionsScreen> with WidgetsBindingObserver {
   PermissionStatus? _mic, _notif, _contacts, _phone;
-  bool? _a11y, _battery, _notifAccess, _assistant;
+  bool? _a11y, _battery, _notifAccess, _assistant, _files, _exact;
 
   @override
   void initState() {
@@ -45,6 +45,8 @@ class _PermissionsScreenState extends State<PermissionsScreen> with WidgetsBindi
     final ph = await Permission.phone.status;
     final na = await d.notificationAccess();
     final asst = await d.isDefaultAssistant();
+    final files = await d.allFilesAccess();
+    final exact = await d.exactAlarmsAllowed();
     if (mounted) {
       setState(() {
         _mic = mic;
@@ -55,6 +57,8 @@ class _PermissionsScreenState extends State<PermissionsScreen> with WidgetsBindi
         _phone = ph;
         _notifAccess = na;
         _assistant = asst;
+        _files = files;
+        _exact = exact;
       });
     }
   }
@@ -105,8 +109,20 @@ class _PermissionsScreenState extends State<PermissionsScreen> with WidgetsBindi
               ),
             ),
             _tile(
+              'All files access',
+              'Lets "open my resume PDF" find documents anywhere on your phone (Downloads, WhatsApp Documents…). Searched on the phone only.',
+              _files,
+              d.openAllFilesSettings,
+            ),
+            _tile(
+              'Alarms & reminders',
+              'Lets LEO reminders ring at the exact minute.',
+              _exact,
+              d.openExactAlarmSettings,
+            ),
+            _tile(
               'Phone calls',
-              'Lets "call Pavan" place the call directly. Without it, LEO opens the dialer and you tap call.',
+              'Lets LEO place, answer, reject and end calls when you ask ("Leo, answer", "Leo, cut the call").',
               _phone?.isGranted,
               () => _request(Permission.phone),
             ),

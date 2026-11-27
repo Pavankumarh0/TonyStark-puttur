@@ -28,6 +28,7 @@ class SarvamClient {
     required Uint8List wav,
     String model = 'saaras:v4',
     String languageCode = 'en-IN',
+    String mode = 'transcribe',
     List<String> keyterms = const [],
   }) async {
     final req = http.MultipartRequest('POST', Uri.parse('$_base/speech-to-text'))
@@ -35,7 +36,7 @@ class SarvamClient {
       ..fields['model'] = model
       ..fields['language_code'] = languageCode
       ..files.add(http.MultipartFile.fromBytes('file', wav, filename: 'audio.wav'));
-    if (model.startsWith('saaras')) req.fields['mode'] = 'transcribe';
+    if (model.startsWith('saaras')) req.fields['mode'] = mode;
     if (keyterms.isNotEmpty && model == 'saaras:v4') {
       req.fields['keyterms'] = jsonEncode(keyterms.take(50).map((k) => k.length > 64 ? k.substring(0, 64) : k).toList());
     }

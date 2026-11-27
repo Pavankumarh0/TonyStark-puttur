@@ -63,6 +63,9 @@ class LocalIntentEngine {
         .firstMatch(text);
     if (signIn != null && signIn.group(1)!.split(' ').length <= 4) return SignInIntent(signIn.group(1)!.trim());
 
+    final early = _early(text, n);
+    if (early != null) return early;
+
     final control = _control(n, ctx);
     if (control != null) return control;
 
@@ -76,6 +79,7 @@ class LocalIntentEngine {
     }
 
     return _phoneActions(text, n) ??
+        _round3(text, n) ??
         _checkMessages(n) ??
         _media(text, n) ??
         _call(text, n) ??
@@ -195,6 +199,106 @@ class LocalIntentEngine {
     return null;
   }
 
+  // ---------------------------------------------------------------- alarms / calls / screen (checked before STOP)
+  LocalIntent? _early(String text, String n) {
+    final t = n.replaceFirst(RegExp(r"^(uh|um|hey|ok|okay) "), '');
+    // Alarms
+    if (RegExp(r"^(snooze)( the| my)?( alarm)?( for (\d+) minutes?)?$").hasMatch(t)) {
+      final m = RegExp(r"(\d+) minutes?").firstMatch(t);
+      return SnoozeAlarmIntent(minutes: m == null ? null : int.parse(m.group(1)!));
+    }
+    // Match on the original wording so "6:30" keeps its colon.
+    final tl = text.toLowerCase().replaceFirst(RegExp(r"^(uh|um|hey|ok|okay),?\s+"), '').replaceAll(RegExp(r'[.!?]+$'), '').trim();
+    final al = RegExp(r"^(?:stop|dismiss|turn off|switch off|cancel|delete|remove|disable|kill)\s+(?:the\s+|my\s+)?(all\s+)?(?:(.+?)\s+)?alarms?(?:\s+(?:for|at|of)\s+(.+))?$").firstMatch(tl);
+    if (al != null) {
+      final what = (al.group(3) ?? al.group(2) ?? 'next').trim();
+      return DismissAlarmIntent(what, all: al.group(1) != null || RegExp(r"\balarms\b").hasMatch(tl) && !RegExp(r"\d").hasMatch(tl));
+    }
+    // Calls
+    if (RegExp(r"^(answer|accept|pick up|pickup|receive|attend)( the| this)?( phone)?( call)?( please)?$").hasMatch(t) ||
+        RegExp(r"^(pick it up|answer it)$").hasMatch(t)) {
+      return const CallControlIntent(CallAction.answer);
+    }
+    if (RegExp(r"^(reject|decline|ignore|don't answer|do not answer)( the| this)?( phone)?( call)?$").hasMatch(t)) {
+      return const CallControlIntent(CallAction.reject);
+    }
+    if (RegExp(r"^(end|cut|disconnect|hang up|hangup|drop|finish|terminate)( the| this| my)?( phone)?( call)?( now| please)?$").hasMatch(t) && t != 'end') {
+      return const CallControlIntent(CallAction.end);
+    }
+    // Reminders
+    if (RegExp(r"^(list|show|tell me|read|what are|what're|do i have)( me)?( all)?( my| the)?( any)? reminders?( do i have)?$").hasMatch(t)) {
+      return const ListRemindersIntent();
+    }
+    if (RegExp(r"^(delete|remove|cancel|clear) (all )?(of )?(my |the )?reminders$").hasMatch(t)) {
+      return const DeleteReminderIntent(all: true);
+    }
+    final dr = RegExp(r"^(?:delete|remove|cancel|clear)\s+(?:the\s+|my\s+)?reminder(?:\s+(?:about|to|for|called|that says))?\s*(.*)$").firstMatch(t);
+    if (dr != null) return DeleteReminderIntent(about: dr.group(1)!.trim().isEmpty ? null : dr.group(1)!.trim());
+    // Screen commands (work in whatever app is on screen)
+    if (RegExp(r"^(scroll|swipe)( the page| the screen)? down$|^scroll$|^(go |move )?down$").hasMatch(t)) return const ScreenCommandIntent(ScreenCommand.scrollDown);
+    if (RegExp(r"^(scroll|swipe)( the page| the screen)? up$|^(go |move )?up$").hasMatch(t)) return const ScreenCommandIntent(ScreenCommand.scrollUp);
+    if (RegExp(r"^(go back|back|go to previous|previous screen)$").hasMatch(t)) return const ScreenCommandIntent(ScreenCommand.back);
+    if (RegExp(r"^(go home|home|go to home screen|home screen)$").hasMatch(t)) return const ScreenCommandIntent(ScreenCommand.home);
+    if (RegExp(r"^(read (this|it|that|the screen|this page|this screen|out this|this message|this chat|what's on (the|my) screen)|what's on (my|the) screen|what is on (my|the) screen|what does it say|what does this say)$").hasMatch(t)) {
+      return const ScreenCommandIntent(ScreenCommand.read);
+    }
+    final tap = RegExp(r"^(?:tap|click|press|select|hit|choose)\s+(?:on\s+)?(?:the\s+)?(.+?)(?:\s+button|\s+option)?$", caseSensitive: false).firstMatch(text);
+    if (tap != null) return ScreenCommandIntent(ScreenCommand.tap, arg: tap.group(1)!.trim());
+    final typ = RegExp(r"^(?:type|write|enter)\s+(.+?)(?:\s+(?:here|in the box|in the field))?$", caseSensitive: false).firstMatch(text);
+    if (typ != null && !RegExp(r"\b(email|mail|letter|message to|essay|post|document)\b", caseSensitive: false).hasMatch(text)) {
+      return ScreenCommandIntent(ScreenCommand.type, arg: typ.group(1)!.trim());
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------- files / web / install / shopping / chat reading
+  LocalIntent? _round3(String text, String n) {
+    // Read a WhatsApp chat aloud
+    final rc = RegExp(r"^(?:read|read out|read me)\s+(?:my\s+|the\s+)?(?:latest\s+|last\s+|recent\s+)?(?:whatsapp\s+)?(?:chat|messages|conversation)\s+(?:with|from)\s+(.+?)(?:\s+(?:on|in)\s+whatsapp)?$", caseSensitive: false)
+        .firstMatch(text);
+    if (rc != null) return ReadChatIntent(_cap(rc.group(1)!));
+    // Files
+    final ext = RegExp(r"\b(pdf|pdfs|document|documents|doc|docx|excel|ppt|presentation|file|files)\b").firstMatch(n);
+    if (ext != null && RegExp(r"^(find|search|open|show|look for|get|where is|where's|locate)\b").hasMatch(n)) {
+      final kind = ext.group(1)!;
+      final exts = switch (kind) {
+        'doc' || 'docx' => ['doc', 'docx'],
+        'excel' => ['xls', 'xlsx', 'csv'],
+        'ppt' || 'presentation' => ['ppt', 'pptx'],
+        'document' || 'documents' => ['pdf', 'doc', 'docx', 'txt'],
+        'file' || 'files' => ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'zip'],
+        _ => ['pdf'],
+      };
+      var q = n
+          .replaceFirst(RegExp(r"^(find|search for|search|open|show me|show|look for|get|where is|where's|locate)\s+"), '')
+          .replaceAll(RegExp(r"\b(my|the|a|an|pdf|pdfs|document|documents|doc|docx|excel|ppt|presentation|file|files|named|called|on my phone|in my phone|from downloads|in downloads)\b"), ' ')
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
+      return FindFileIntent(q, exts: exts, open: n.startsWith('open') || n.contains(' and open'));
+    }
+    // Install apps
+    final inst = RegExp(r"^(?:install|download|get)\s+(?:the\s+)?(.+?)(?:\s+app(?:lication)?)?(?:\s+(?:from|on)\s+(?:the\s+)?play ?store)?$", caseSensitive: false).firstMatch(text);
+    if (inst != null && !RegExp(r"\b(pdf|file|photo|video|song|movie)\b", caseSensitive: false).hasMatch(text) && inst.group(1)!.split(' ').length <= 4) {
+      return InstallAppIntent(inst.group(1)!.trim());
+    }
+    // Websites
+    final web = RegExp(r"^(?:open|go to|visit|browse|load|show me)\s+(?:the\s+)?(?:website\s+|site\s+)?((?:https?://)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/\S*)?|[a-z0-9 ]+?\s+(?:website|site|dot com))(?:\s+and\s+(.+))?$", caseSensitive: false)
+        .firstMatch(text);
+    if (web != null) return OpenWebsiteIntent(web.group(1)!.trim(), then: web.group(2)?.trim());
+    // Shopping
+    final shop = RegExp(r"^(?:search for|search|find|look for|buy|order|shop for|compare|show me|add)\s+(.+?)\s+(?:(?:to (?:my |the )?cart )?(?:on|in|from|at)\s+)(amazon|flipkart)(?:\s+and\s+(.+))?$", caseSensitive: false)
+        .firstMatch(text);
+    if (shop != null) {
+      final rest = '${n} ${shop.group(3) ?? ''}';
+      final q = shop.group(1)!.replaceAll(RegExp(r"\s+to (my |the )?cart$", caseSensitive: false), '').trim();
+      return ShopIntent(q,
+          store: shop.group(2)!.toLowerCase(),
+          addToCart: RegExp(r"\b(cart|buy|order)\b").hasMatch(rest),
+          compare: true);
+    }
+    return null;
+  }
+
   // ---------------------------------------------------------------- phone actions (local)
   LocalIntent? _phoneActions(String text, String n) {
     // Reply to a message from the notification
@@ -233,7 +337,7 @@ class LocalIntentEngine {
     // "call" only counts as a meeting with scheduling verbs ("make a call to X" is a phone call).
     final mt = RegExp(r"^(schedule|set up|setup|create|book|arrange|plan|fix|add|organi[sz]e)( a| an)?( new)?( google meet| gmeet| g meet| zoom| video| online| team| quick)? (meeting|meet|gmeet|google meet|g meet|call|event|appointment|session)\b").firstMatch(n);
     if (mt != null || RegExp(r"^(add|put) (.+) (to|in|on) (my )?calendar").hasMatch(n)) {
-      final meet = RegExp(r"\b(google meet|gmeet|g meet|meet link|video call|video meeting|on meet|in meet)\b").hasMatch(n) ||
+      final meet = RegExp(r"\b(google meet|gmeet|g meet|meet link|video call|video meeting|on meet|in meet|zoom)\b").hasMatch(n) ||
           (mt?.group(4)?.contains('meet') ?? false) || (mt?.group(5)?.contains('meet') ?? false);
       final withM = RegExp(r"\bwith (.+?)(?=\s+(?:tomorrow|today|tonight|at|on|about|regarding|for|from|next|this|in|titled|called)\b|[.?!]?$)", caseSensitive: false).firstMatch(text);
       final attendees = <String>[];
@@ -257,7 +361,7 @@ class LocalIntentEngine {
     if (nav != null) return NavigateIntent(nav.group(1)!.replaceAll(RegExp(r'[.!?]+$'), '').trim());
     // Web search
     final ws = RegExp(r"^(?:search google|search the web|search online|search on google|google search|look up|search|google)(?: on google| on the web| online)?(?: for| about)?\s+(.+)$", caseSensitive: false).firstMatch(text);
-    if (ws != null && !RegExp(r"\byoutube\b", caseSensitive: false).hasMatch(text)) return WebSearchIntent(ws.group(1)!.trim());
+    if (ws != null && !RegExp(r"\b(youtube|amazon|flipkart)\b", caseSensitive: false).hasMatch(text)) return WebSearchIntent(ws.group(1)!.trim());
     // Flashlight
     final fl = RegExp(r"^(?:turn|switch|put)\s+(on|off)\s+(?:the\s+)?(?:flashlight|torch|flash ?light|flash)$|^(?:turn|switch)\s+(?:the\s+)?(?:flashlight|torch|flash)\s+(on|off)$|^(?:flashlight|torch)\s+(on|off)$")
         .firstMatch(n);

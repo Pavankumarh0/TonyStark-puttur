@@ -140,6 +140,23 @@ class LocalIntentClassifier {
     return out;
   }
 
+  /// Human description of a local label, for "Did you mean …?" questions.
+  static String? describe(String label) => switch (label) {
+        'play_media' => 'play something',
+        'call' => 'make a call',
+        'check_messages' => 'check your messages',
+        'open_app' => 'open an app',
+        'time' => 'tell you the time',
+        'date' => 'tell you the date',
+        'stop' => 'stop',
+        'pause' => 'pause',
+        'resume' => 'resume',
+        'cancel' => 'cancel the task',
+        'status' => 'tell you what I\'m doing',
+        'greeting' => 'say hello',
+        _ => null,
+      };
+
   /// Classifies and extracts slots. Returns null if not confident or the label needs AI.
   LocalIntent? classify(String text, {double minConfidence = 0.7}) {
     final p = predict(text);

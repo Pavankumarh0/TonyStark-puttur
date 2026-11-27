@@ -270,3 +270,73 @@ class PhoneTaskIntent extends LocalIntent {
   @override
   bool get requiresAi => true;
 }
+
+// ---- Round 3: alarms, reminders, calls, files, web, installs, shopping, screen context
+class DismissAlarmIntent extends LocalIntent {
+  final String text; // "next" | "all" | a time phrase
+  final bool all;
+  const DismissAlarmIntent(this.text, {this.all = false});
+}
+
+class SnoozeAlarmIntent extends LocalIntent {
+  final int? minutes;
+  const SnoozeAlarmIntent({this.minutes});
+}
+
+class ListRemindersIntent extends LocalIntent {
+  const ListRemindersIntent();
+}
+
+class DeleteReminderIntent extends LocalIntent {
+  final String? about; // null + all=true → delete all
+  final bool all;
+  const DeleteReminderIntent({this.about, this.all = false});
+}
+
+enum CallAction { answer, end, reject }
+
+class CallControlIntent extends LocalIntent {
+  final CallAction action;
+  const CallControlIntent(this.action);
+}
+
+class FindFileIntent extends LocalIntent {
+  final String query;
+  final List<String> exts;
+  final bool open;
+  const FindFileIntent(this.query, {this.exts = const ['pdf'], this.open = true});
+}
+
+class OpenWebsiteIntent extends LocalIntent {
+  final String site; // domain or name
+  final String? then; // optional follow-up ("and search for laptops")
+  const OpenWebsiteIntent(this.site, {this.then});
+}
+
+class InstallAppIntent extends LocalIntent {
+  final String app;
+  const InstallAppIntent(this.app);
+}
+
+class ShopIntent extends LocalIntent {
+  final String query;
+  final String store; // amazon | flipkart
+  final bool addToCart;
+  final bool compare;
+  const ShopIntent(this.query, {this.store = 'amazon', this.addToCart = false, this.compare = true});
+}
+
+enum ScreenCommand { scrollDown, scrollUp, back, home, read, tap, type }
+
+/// Acts on whatever app is on screen right now ("read this", "scroll down", "tap Archive").
+class ScreenCommandIntent extends LocalIntent {
+  final ScreenCommand command;
+  final String? arg;
+  const ScreenCommandIntent(this.command, {this.arg});
+}
+
+/// "read my chat with Rahul" — open the WhatsApp chat and read the latest messages aloud.
+class ReadChatIntent extends LocalIntent {
+  final String who;
+  const ReadChatIntent(this.who);
+}

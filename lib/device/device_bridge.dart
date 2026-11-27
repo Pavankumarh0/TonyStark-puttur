@@ -177,8 +177,11 @@ class DeviceBridge {
   Future<String> llmGenerate(String prompt) async => await _ch.invokeMethod<String>('llmGenerate', {'prompt': prompt}) ?? '';
 
   // ---- generic screen control (accessibility)
-  Future<Map<String, dynamic>> screenDump({int max = 70}) async =>
-      await _ch.invokeMapMethod<String, dynamic>('screenDump', {'max': max}) ?? const {'ok': false, 'reason': 'no_result'};
+  Future<Map<String, dynamic>> screenDump({int max = 70, bool skipOwn = false}) async =>
+      await _ch.invokeMapMethod<String, dynamic>('screenDump', {'max': max, 'skipOwn': skipOwn}) ?? const {'ok': false, 'reason': 'no_result'};
+  /// Visible text of the app on screen (skipOwn: the app UNDER LEO's assistant panel).
+  Future<Map<String, dynamic>> screenText({bool skipOwn = false}) async =>
+      await _ch.invokeMapMethod<String, dynamic>('screenText', {'skipOwn': skipOwn}) ?? const {'ok': false};
   Future<Map<String, dynamic>> screenAct(String type, {int? index, String? text, String? dir, String? package}) async =>
       await _ch.invokeMapMethod<String, dynamic>('screenAct', {'type': type, 'index': index, 'text': text, 'dir': dir, 'package': package}) ??
       const {'ok': false};
@@ -198,6 +201,26 @@ class DeviceBridge {
       [for (final m in await _ch.invokeListMethod<Map>('replyTargets', {'who': who}) ?? []) Map<String, dynamic>.from(m)];
   Future<Map<String, dynamic>> notificationReply(String key, String text) async =>
       await _ch.invokeMapMethod<String, dynamic>('notificationReply', {'key': key, 'text': text}) ?? const {'ok': false};
+
+  // ---- alarms / reminders / calls / files (local)
+  Future<Map<String, dynamic>> dismissAlarm({String mode = 'next', int? hour, int? minute, String? label}) =>
+      _act('dismissAlarm', {'mode': mode, 'hour': hour, 'minute': minute, 'label': label});
+  Future<Map<String, dynamic>> snoozeAlarm({int? minutes}) => _act('snoozeAlarm', {'minutes': minutes});
+  Future<Map<String, dynamic>> addReminder(DateTime at, String text) =>
+      _act('addReminder', {'at': at.millisecondsSinceEpoch, 'text': text});
+  Future<List<Map<String, dynamic>>> listReminders() async =>
+      [for (final m in await _ch.invokeListMethod<Map>('listReminders') ?? []) Map<String, dynamic>.from(m)];
+  Future<Map<String, dynamic>> deleteReminder({int? id}) => _act('deleteReminder', {'id': id});
+  Future<bool> exactAlarmsAllowed() async => await _ch.invokeMethod<bool>('exactAlarmsAllowed') ?? true;
+  Future<void> openExactAlarmSettings() => _ch.invokeMethod('openExactAlarmSettings');
+  Future<Map<String, dynamic>> answerCall() => _act('answerCall');
+  Future<Map<String, dynamic>> endCall() => _act('endCall');
+  Future<String> callState() async => await _ch.invokeMethod<String>('callState') ?? 'unknown';
+  Future<bool> allFilesAccess() async => await _ch.invokeMethod<bool>('allFilesAccess') ?? false;
+  Future<void> openAllFilesSettings() => _ch.invokeMethod('openAllFilesSettings');
+  Future<List<Map<String, dynamic>>> findFiles(String query, {List<String> exts = const ['pdf']}) async =>
+      [for (final m in await _ch.invokeListMethod<Map>('findFiles', {'query': query, 'exts': exts}) ?? []) Map<String, dynamic>.from(m)];
+  Future<Map<String, dynamic>> openFile(String path) => _act('openFile', {'path': path});
 
   // ---- sign-in help (LEO only acts on the user's answers; never types passwords)
   Future<Map<String, dynamic>> loginScan(String pkg) async =>

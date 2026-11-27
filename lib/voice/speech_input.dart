@@ -45,6 +45,9 @@ class SpeechInput {
         apiKey: key,
         wav: encodeWav(samples, sampleRate: MicEngine.sampleRate),
         model: settings.sarvamSttModel,
+        // Mixed-language mode: Hindi/Kannada/code-mixed speech is translated to English text.
+        languageCode: settings.mixedLanguage ? 'unknown' : 'en-IN',
+        mode: settings.mixedLanguage ? 'translate' : 'transcribe',
         keyterms: keyterms.toList(),
       );
       unawaited(memory.logVoiceUsage('stt', seconds, true));

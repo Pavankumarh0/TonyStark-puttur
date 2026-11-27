@@ -36,9 +36,44 @@ object ScreenAgent {
     private fun svc() = JarvisAccessibilityService.instance
 
     /** Numbered list of visible elements on the active window. */
-    fun dump(maxNodes: Int = 70): Map<String, Any?> {
+    /**
+     * Root of the app the user is looking at. With [skipOwn], LEO's own windows (e.g. the assistant
+     * panel floating on top) are skipped so we read the app underneath.
+     */
+    private fun targetRoot(s: JarvisAccessibilityService, skipOwn: Boolean): AccessibilityNodeInfo? {
+        val active = s.rootInActiveWindow
+        if (!skipOwn || active?.packageName?.toString()?.startsWith("com.jarvis") != true) return active
+        return try {
+            s.windows
+                .filter { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION }
+                .sortedByDescending { it.layer }
+                .mapNotNull { it.root }
+                .firstOrNull { it.packageName?.toString()?.startsWith("com.jarvis") == false }
+        } catch (_: Exception) { null }
+    }
+
+    /** Visible text of the current app, in reading order (for "read this" / screen context). */
+    fun readText(skipOwn: Boolean, max: Int = 60): Map<String, Any?> {
         val s = svc() ?: return mapOf("ok" to false, "reason" to "accessibility_off")
-        val root = s.rootInActiveWindow ?: return mapOf("ok" to false, "reason" to "no_window")
+        val root = targetRoot(s, skipOwn) ?: return mapOf("ok" to false, "reason" to "no_window")
+        val pkg = root.packageName?.toString()
+        if (isBlocked(pkg)) return mapOf("ok" to false, "reason" to "blocked_app", "package" to pkg)
+        val out = LinkedHashSet<String>()
+        val stack = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
+        while (stack.isNotEmpty() && out.size < max) {
+            val n = stack.removeFirst()
+            if (n.isVisibleToUser && !n.isPassword) {
+                val t = (n.text?.toString() ?: "").trim()
+                if (t.length > 1) out += t.take(300)
+            }
+            for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
+        }
+        return mapOf("ok" to true, "package" to pkg, "lines" to out.toList())
+    }
+
+    fun dump(maxNodes: Int = 70, skipOwn: Boolean = false): Map<String, Any?> {
+        val s = svc() ?: return mapOf("ok" to false, "reason" to "accessibility_off")
+        val root = targetRoot(s, skipOwn) ?: return mapOf("ok" to false, "reason" to "no_window")
         val pkg = root.packageName?.toString()
         if (isBlocked(pkg)) return mapOf("ok" to false, "reason" to "blocked_app", "package" to pkg)
         val nodes = mutableListOf<AccessibilityNodeInfo>()
@@ -83,7 +118,9 @@ object ScreenAgent {
     /** Screen bounds [l,t,r,b] of element [index] from the last dump (for the overlay highlight). */
     fun boundsOf(index: Int?): IntArray? {
         val n = index?.let { lastNodes.getOrNull(it) } ?: return null
+        n.refresh() // the screen may have moved since the dump (animations/scrolling)
         val r = Rect(); n.getBoundsInScreen(r)
+        if (r.width() <= 0 || r.height() <= 0) return null
         return intArrayOf(r.left, r.top, r.right, r.bottom)
     }
 

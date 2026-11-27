@@ -150,6 +150,10 @@ class JarvisOrchestrator extends ChangeNotifier {
     final unfinished = await memory.unfinishedTasks();
     if (unfinished.isNotEmpty) task = unfinished.first;
     classifier.train(learned: await memory.learnedExamples());
+    unawaited(apps.apps().then((list) {
+      final labels = list.map((x) => x.label).where((l) => l.length > 2 && l.length < 20).toList()..sort((a, b) => a.length.compareTo(b.length));
+      speechIn.keyterms.addAll(labels.take(30));
+    }).catchError((_) {}));
     debugPrint('LEO local-model: trained on ${classifier.exampleCount} examples');
     mic.onWake = _onWake;
     mic.addListener(notifyListeners);
@@ -174,6 +178,11 @@ class JarvisOrchestrator extends ChangeNotifier {
       case 'serviceStopped':
         serviceRunning = false;
         notifyListeners();
+      case 'incoming_call':
+        final caller = (e['caller'] as String?) ?? 'Unknown caller';
+        unawaited(_say('Incoming call from $caller, ${settings.address}. Say "Leo, answer" or "Leo, reject".', kind: 'call'));
+      case 'reminder':
+        unawaited(_say('Reminder, ${settings.address}: ${e['text']}', kind: 'reminder'));
       case 'assist':
         final on = e['on'] == true;
         if (on == assistMode) return;
@@ -391,8 +400,21 @@ class JarvisOrchestrator extends ChangeNotifier {
     if (intent is UnknownIntent && _freeTextWait == null && _choiceWait == null && _approvalWait == null) {
       final guess = classifier.classify(_currentUtterance);
       if (guess != null) {
-        debugPrint('LEO local-model: "${_currentUtterance}" → ${guess.runtimeType}');
+        debugPrint('LEO local-model: "$_currentUtterance" → ${guess.runtimeType}');
         intent = guess;
+      } else {
+        // Voice + screen: "delete this", "share it", "save that" in the assistant panel act on the app underneath.
+        final deictic = RegExp(r'\b(this|it|that|here|these|those)\b', caseSensitive: false).hasMatch(_currentUtterance);
+        if (assistMode && deictic) {
+          intent = PhoneTaskIntent('$_currentUtterance (on the screen that is open right now)');
+        } else {
+          // Somewhat sure → ask instead of guessing or failing.
+          final top = classifier.predict(_currentUtterance);
+          if (top.isNotEmpty && top.first.$2 >= 0.4 && LocalIntentClassifier.describe(top.first.$1) != null) {
+            final clarified = await _clarify(raw, top.first.$1);
+            if (clarified != null) intent = clarified;
+          }
+        }
       }
     }
     final kind = _kindOf(intent);
@@ -505,6 +527,28 @@ class JarvisOrchestrator extends ChangeNotifier {
         _startTask('Reply to $who', 'reply', TaskRoute.local, {'who': who, 'message': message});
       case PhoneTaskIntent(:final goal):
         _startTask(_titleFrom(goal), 'agent', TaskRoute.ai, {'goal': goal});
+      case DismissAlarmIntent(:final text, :final all):
+        _startTask('Turn off ${all ? 'all alarms' : 'alarm'}', 'alarm_off', TaskRoute.local, {'text': text, 'all': all});
+      case SnoozeAlarmIntent(:final minutes):
+        _startTask('Snooze alarm', 'alarm_off', TaskRoute.local, {'snooze': true, 'minutes': minutes});
+      case ListRemindersIntent():
+        _startTask('List reminders', 'reminders', TaskRoute.local, {'op': 'list'});
+      case DeleteReminderIntent(:final about, :final all):
+        _startTask(all ? 'Delete all reminders' : 'Delete reminder', 'reminders', TaskRoute.local, {'op': 'delete', 'about': about, 'all': all});
+      case CallControlIntent(:final action):
+        _startTask('${action.name[0].toUpperCase()}${action.name.substring(1)} call', 'call_control', TaskRoute.local, {'action': action.name});
+      case FindFileIntent(:final query, :final exts, :final open):
+        _startTask('Find ${exts.first.toUpperCase()} "$query"', 'find_file', TaskRoute.local, {'query': query, 'exts': exts, 'open': open});
+      case OpenWebsiteIntent(:final site, :final then):
+        _startTask('Open $site', 'website', TaskRoute.local, {'site': site, 'then': then});
+      case InstallAppIntent(:final app):
+        _startTask('Install $app', 'install_app', TaskRoute.local, {'app': app});
+      case ShopIntent(:final query, :final store, :final addToCart):
+        _startTask('Shop: $query on $store', 'shop', TaskRoute.local, {'query': query, 'store': store, 'cart': addToCart});
+      case ScreenCommandIntent(:final command, :final arg):
+        _startTask('Screen: ${command.name}${arg == null ? '' : ' "$arg"'}', 'screen_cmd', TaskRoute.local, {'cmd': command.name, 'arg': arg});
+      case ReadChatIntent(:final who):
+        _startTask('Read chat with $who', 'read_chat', TaskRoute.local, {'who': who});
       case SignInIntent(:final appName):
         _startTask('Sign in to $appName', 'sign_in', TaskRoute.local, {'query': appName});
       case CallIntent(:final name):
@@ -546,7 +590,9 @@ class JarvisOrchestrator extends ChangeNotifier {
         OpenAppIntent() || SendMessageIntent() || PlayMediaIntent() || CallIntent() || CheckMessagesIntent() ||
         MediaControlIntent() || SetAlarmIntent() || SetTimerIntent() || ScheduleMeetingIntent() || StartMeetIntent() ||
         NavigateIntent() || WebSearchIntent() || FlashlightIntent() || CameraIntent() || SettingsPanelIntent() ||
-        SignInIntent() || ReplyIntent() => 'command',
+        SignInIntent() || ReplyIntent() || DismissAlarmIntent() || SnoozeAlarmIntent() || ListRemindersIntent() ||
+        DeleteReminderIntent() || CallControlIntent() || FindFileIntent() || OpenWebsiteIntent() || InstallAppIntent() ||
+        ShopIntent() || ScreenCommandIntent() || ReadChatIntent() => 'command',
         PhoneTaskIntent() => 'agent',
         KnowledgeIntent() => 'knowledge',
         WriteIntent() => 'write',
@@ -917,6 +963,15 @@ class JarvisOrchestrator extends ChangeNotifier {
     'phone_action': _runPhoneAction,
     'reply': _runReply,
     'agent': _runAgent,
+    'alarm_off': _runAlarmOff,
+    'reminders': _runReminders,
+    'call_control': _runCallControl,
+    'find_file': _runFindFile,
+    'website': _runWebsite,
+    'install_app': _runInstallApp,
+    'shop': _runShop,
+    'screen_cmd': _runScreenCommand,
+    'read_chat': _runReadChat,
   };
 
   static const _kindToLabel = {
@@ -1226,12 +1281,18 @@ class JarvisOrchestrator extends ChangeNotifier {
 
   // ---- runner: generic screen agent (AI plans one step at a time; LEO executes with safety rails)
   static final _sensitiveWords = RegExp(
-      r'\b(send|delete|remove|discard|trash|archive all|pay|payment|buy|purchase|order|place order|checkout|post|publish|share|submit|confirm|transfer|uninstall|book|reserve|forward|reply all|unsubscribe|block|report|clear all|factory reset|erase)\b',
+      r'\b(send|delete|remove|discard|trash|archive all|pay|payment|buy|buy now|purchase|order|place order|checkout|post|publish|share|submit|confirm|transfer|install|uninstall|book|reserve|forward|reply all|unsubscribe|block|report|clear all|factory reset|erase)\b',
       caseSensitive: false);
 
-  Future<String?> _runAgent(TaskTracker tr) async {
+  Future<String?> _runAgent(TaskTracker tr) => _agentFor(tr, tr.snapshot.params['goal'] as String);
+
+  Future<String?> _agentFor(TaskTracker tr, String goal) async {
     final a = settings.address;
-    final goal = tr.snapshot.params['goal'] as String;
+    if (assistMode) {
+      // The agent works in the app under the panel: get out of the way first.
+      await device.closeAssist();
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+    }
     if (!await device.accessibilityEnabled()) {
       throw Exception('To operate apps for you I need the LEO accessibility service. Turn it on in Permissions.');
     }
@@ -1403,6 +1464,16 @@ class JarvisOrchestrator extends ChangeNotifier {
     }
     final at = when.at;
     tr.updateStep('time', status: StepStatus.done, detail: TimeParser.spoken(at));
+    if (label != null) {
+      // A reminder: LEO schedules it itself, so it can be listed and deleted later.
+      tr.updateStep('set', description: 'Save reminder', status: StepStatus.running);
+      final r = await device.addReminder(at, label);
+      if (r['ok'] != true) throw Exception('${r['reason'] ?? 'Could not save the reminder'}');
+      tr.updateStep('set', status: StepStatus.done, detail: r['exact'] == true ? 'Exact time' : 'May be a few minutes late');
+      await _say('I\'ll remind you to ${label[0].toLowerCase()}${label.substring(1)} at ${TimeParser.spoken(at)}, $a.'
+          '${r['exact'] == true ? '' : ' Allow "Alarms & reminders" for LEO in Settings for exact timing.'}', kind: 'command');
+      return 'Reminder ${TimeParser.spoken(at)}';
+    }
     if (at.difference(DateTime.now()) > const Duration(hours: 24)) {
       // Clock alarms only ring within the next 24 h; further out, use a calendar entry with a reminder.
       tr.updateStep('set', description: 'Add a calendar reminder', status: StepStatus.running);
@@ -1464,10 +1535,12 @@ class JarvisOrchestrator extends ChangeNotifier {
           detail: [if (emails.isNotEmpty) emails.join(', '), if (missing.isNotEmpty) 'no email saved for ${missing.join(', ')}'].join(' · '));
     }
 
-    final title = (p['title'] as String?) ?? (meet ? 'Google Meet' : 'Meeting');
+    final zoom = (p['text'] as String).toLowerCase().contains('zoom');
+    final useMeet = meet && !zoom;
+    final title = (p['title'] as String?) ?? (zoom ? 'Zoom meeting' : (meet ? 'Google Meet' : 'Meeting'));
     tr.updateStep('open', status: StepStatus.running);
     Map<String, dynamic> r;
-    if (meet) {
+    if (meet || zoom) {
       String utc(DateTime d) {
         final u = d.toUtc();
         String two(int v) => v.toString().padLeft(2, '0');
@@ -1477,9 +1550,10 @@ class JarvisOrchestrator extends ChangeNotifier {
         'action': 'TEMPLATE',
         'text': title,
         'dates': '${utc(start)}/${utc(end)}',
-        'vcon': 'meet', // Google Calendar attaches a Meet link
+        if (useMeet) 'vcon': 'meet', // Google Calendar attaches a Meet link
+        if (zoom) 'location': 'Zoom',
         if (emails.isNotEmpty) 'add': emails.join(','),
-        'details': 'Scheduled by LEO',
+        'details': zoom ? 'Zoom meeting — add the Zoom link from the Zoom app (Schedule → copy invitation).' : 'Scheduled by LEO',
       }).toString();
       r = await device.openUrl(url);
     } else {
@@ -1489,7 +1563,12 @@ class JarvisOrchestrator extends ChangeNotifier {
     tr.updateStep('open', status: StepStatus.done, detail: 'Waiting for you to tap Save');
     final who = emails.isEmpty ? '' : ' with ${names.where((n) => !missing.contains(n)).join(' and ')} invited';
     final miss = missing.isEmpty ? '' : ' I don\'t have an email saved for ${missing.join(' and ')}, so add them in Guests.';
-    await _say('I\'ve filled in "$title" for ${TimeParser.spoken(start)}${meet ? ' with a Google Meet link' : ''}$who.$miss '
+    if (zoom) {
+      await _say('Zoom doesn\'t let other apps create Zoom links, $a, so I\'ve filled in "$title" for ${TimeParser.spoken(start)} in your calendar$who. '
+          'Tap Save, then open Zoom, tap Schedule and paste the link into the event.', kind: 'command');
+      return 'Event prepared (Zoom link needed)';
+    }
+    await _say('I\'ve filled in "$title" for ${TimeParser.spoken(start)}${useMeet ? ' with a Google Meet link' : ''}$who.$miss '
         'Please check it and tap Save, $a — nothing is sent until you do.', kind: 'command');
     return 'Event prepared (user saves)';
   }
@@ -1532,6 +1611,381 @@ class JarvisOrchestrator extends ChangeNotifier {
     };
     await _say(line, kind: 'command');
     return 'Done';
+  }
+
+  /// Asks "Did you mean …?" and, on yes, re-reads the request as that action.
+  Future<LocalIntent?> _clarify(String raw, String label) async {
+    final what = LocalIntentClassifier.describe(label)!;
+    await _store('user', raw, source: 'voice', kind: 'conversation', route: 'local');
+    final w = Completer<int>();
+    choice = ChoicePrompt('Did you want me to $what?', ['Yes', 'No']);
+    _choiceWait = w;
+    notifyListeners();
+    await _say('Sorry ${settings.address}, I\'m not sure I understood. Did you want me to $what?', kind: 'question');
+    final i = await w.future.timeout(const Duration(seconds: 30), onTimeout: () => 1);
+    if (i != 0) {
+      await _say('Okay. Could you say it another way?');
+      return const ThanksIntent(); // harmless: nothing executed
+    }
+    return classifier.classify(_currentUtterance, minConfidence: 0) ?? UnknownIntent(raw);
+  }
+
+  // ======================================================================== round 3 runners (local)
+  Future<String?> _runAlarmOff(TaskTracker tr) async {
+    final a = settings.address;
+    final p = tr.snapshot.params;
+    tr.addStep(TaskStep(id: 'do', description: tr.snapshot.title));
+    tr.updateStep('do', status: StepStatus.running);
+    if (p['snooze'] == true) {
+      final r = await device.snoozeAlarm(minutes: p['minutes'] as int?);
+      if (r['ok'] != true) throw Exception('No alarm seems to be ringing (${r['reason']}).');
+      tr.updateStep('do', status: StepStatus.done);
+      await _say('Snoozed, $a.', kind: 'command');
+      return 'Snoozed';
+    }
+    final text = (p['text'] as String?) ?? 'next';
+    final when = RegExp(r'\d').hasMatch(text) ? TimeParser.when(text) : null;
+    final r = p['all'] == true
+        ? await device.dismissAlarm(mode: 'all')
+        : when != null
+            ? await device.dismissAlarm(mode: 'time', hour: when.at.hour, minute: when.at.minute)
+            : await device.dismissAlarm(mode: 'next');
+    if (r['ok'] != true) throw Exception('The Clock app didn\'t accept that (${r['reason']}).');
+    tr.updateStep('do', status: StepStatus.done, detail: 'Clock app handled the request');
+    final which = p['all'] == true ? 'all your alarms' : (when != null ? 'your ${TimeParser.spoken(when.at).split(' ').take(2).join(' ')} alarm' : 'your next alarm');
+    await _say('I\'ve asked the Clock app to turn off $which, $a. If it shows a list, pick the one to turn off.', kind: 'command');
+    return 'Dismiss requested';
+  }
+
+  Future<String?> _runReminders(TaskTracker tr) async {
+    final a = settings.address;
+    final p = tr.snapshot.params;
+    final list = await device.listReminders();
+    tr.addStep(TaskStep(id: 'list', description: 'Read your LEO reminders', status: StepStatus.done, detail: '${list.length} upcoming'));
+    String fmt(Map<String, dynamic> r) =>
+        '${r['text']} at ${TimeParser.spoken(DateTime.fromMillisecondsSinceEpoch(r['at'] as int))}';
+    if (p['op'] == 'list') {
+      await _say(list.isEmpty
+          ? 'You have no upcoming reminders, $a.'
+          : 'You have ${list.length} reminder${list.length == 1 ? '' : 's'}: ${list.take(5).map(fmt).join('; ')}.', kind: 'command');
+      return '${list.length} reminders';
+    }
+    if (list.isEmpty) {
+      await _say('There are no reminders to delete, $a.');
+      return 'Nothing to delete';
+    }
+    if (p['all'] == true) {
+      final reply = await _askApproval(tr,
+          ApprovalRequest(id: 'rem-all-${tr.snapshot.id}', actionType: 'reminders.delete_all', title: 'Delete all reminders', content: list.map(fmt).join('\n')),
+          'Delete all ${list.length} reminders, $a?');
+      if (reply.answer != _ApprovalAnswer.approve) {
+        await _say('Okay, I kept them.');
+        return 'Kept';
+      }
+      tr.setState(AgentState.running);
+      await device.deleteReminder();
+      await _say('All reminders deleted.', kind: 'command');
+      return 'Deleted all';
+    }
+    final about = (p['about'] as String?)?.toLowerCase();
+    var matches = about == null
+        ? list
+        : list.where((r) => MemoryRepository.keywords(about).any((w) => (r['text'] as String).toLowerCase().contains(w))).toList();
+    if (matches.isEmpty) matches = list;
+    var pick = matches.first;
+    if (matches.length > 1) {
+      final i = await _askChoice('Which reminder should I delete?', [for (final r in matches) fmt(r)], tr: tr);
+      pick = matches[i];
+    }
+    await device.deleteReminder(id: pick['id'] as int);
+    tr.addStep(TaskStep(id: 'del', description: 'Delete reminder', status: StepStatus.done, detail: fmt(pick)));
+    await _say('Deleted the reminder: ${pick['text']}.', kind: 'command');
+    return 'Deleted';
+  }
+
+  Future<String?> _runCallControl(TaskTracker tr) async {
+    final a = settings.address;
+    final action = tr.snapshot.params['action'] as String;
+    tr.addStep(TaskStep(id: 'do', description: tr.snapshot.title));
+    var ph = await Permission.phone.status;
+    if (!ph.isGranted) ph = await Permission.phone.request();
+    tr.updateStep('do', status: StepStatus.running);
+    final r = action == 'answer' ? await device.answerCall() : await device.endCall();
+    if (r['ok'] != true) {
+      if (r['reason'] == 'no_permission') throw Exception('I need the Phone permission to answer or end calls.');
+      throw Exception(action == 'answer' ? 'There\'s no ringing call to answer.' : 'There\'s no call to end.');
+    }
+    tr.updateStep('do', status: StepStatus.done);
+    await _say(switch (action) { 'answer' => 'Answered.', 'reject' => 'Call rejected, $a.', _ => 'Call ended, $a.' }, kind: 'command');
+    return 'Done';
+  }
+
+  Future<String?> _runFindFile(TaskTracker tr) async {
+    final a = settings.address;
+    final p = tr.snapshot.params;
+    final q = p['query'] as String;
+    final exts = ((p['exts'] as List?) ?? const ['pdf']).cast<String>();
+    tr.addStep(TaskStep(id: 'search', description: 'Search your files for "${q.isEmpty ? 'any' : q}" (${exts.join('/')})'));
+    if (!await device.allFilesAccess()) {
+      unawaited(device.openAllFilesSettings());
+      throw Exception('I need "All files access" to search your documents. I\'ve opened the setting — turn it on for LEO.');
+    }
+    final files = await tr.step('search', () => device.findFiles(q, exts: exts)) ?? const [];
+    if (files.isEmpty) {
+      tr.updateStep('search', detail: 'No matches');
+      await _say('I couldn\'t find any ${exts.first.toUpperCase()} named like "$q" on your phone, $a.');
+      return 'Not found';
+    }
+    tr.updateStep('search', detail: '${files.length} found');
+    var f = files.first;
+    if (files.length > 1) {
+      final i = await _askChoice('I found ${files.length} files. Which one?',
+          [for (final x in files.take(6)) x['name'] as String], details: [for (final x in files.take(6)) 'in ${x['folder']}'], tr: tr);
+      f = files[i];
+    }
+    tr.addStep(TaskStep(id: 'open', description: 'Open ${f['name']}'));
+    final r = await tr.step('open', () => device.openFile(f['path'] as String));
+    if (r?['ok'] != true) throw Exception('${r?['reason'] ?? 'Could not open it'}');
+    await _say('Opening ${f['name']}, $a.', kind: 'command');
+    return 'Opened';
+  }
+
+  Future<String?> _runWebsite(TaskTracker tr) async {
+    final a = settings.address;
+    var site = (tr.snapshot.params['site'] as String).trim().toLowerCase();
+    site = site.replaceAll(RegExp(r'\s+(website|site)$'), '').replaceAll(' dot com', '.com').replaceAll(' ', '');
+    final url = site.startsWith('http') ? site : 'https://${site.contains('.') ? site : '$site.com'}';
+    tr.addStep(TaskStep(id: 'open', description: 'Open $url'));
+    final r = await tr.step('open', () => device.openUrl(url));
+    if (r?['ok'] != true) throw Exception('No browser could open $url.');
+    await _say('Opening $site, $a.', kind: 'command');
+    final then = tr.snapshot.params['then'] as String?;
+    if (then != null && then.isNotEmpty) {
+      await Future<void>.delayed(const Duration(seconds: 3));
+      return _agentFor(tr, '$then on $site');
+    }
+    return 'Opened';
+  }
+
+  Future<String?> _runInstallApp(TaskTracker tr) async {
+    final app = tr.snapshot.params['app'] as String;
+    tr.addStep(TaskStep(id: 'store', description: 'Search Play Store for "$app"'));
+    final r = await tr.step('store', () => device.openUrl('market://search?q=${Uri.encodeComponent(app)}&c=apps', package: 'com.android.vending'));
+    if (r?['ok'] != true) throw Exception('The Play Store could not be opened.');
+    await Future<void>.delayed(const Duration(seconds: 3));
+    // The agent picks the matching result and taps Install — Install always asks you first.
+    return _agentFor(tr, 'install $app');
+  }
+
+  /// Search a shopping app, compare results read from the screen, let the user pick, add to cart.
+  /// Never buys: "Buy now" / "Place order" are blocked as sensitive and not attempted.
+  Future<String?> _runShop(TaskTracker tr) async {
+    final a = settings.address;
+    final p = tr.snapshot.params;
+    final q = p['query'] as String;
+    final store = p['store'] as String;
+    final searched = await _agentFor(tr, 'open $store and search for $q');
+    if (tr.control.isAborted) return searched;
+    await Future<void>.delayed(const Duration(seconds: 3));
+    final txt = await device.screenText();
+    final lines = ((txt['lines'] as List?) ?? const []).cast<String>();
+    final products = parseProducts(lines);
+    tr.addStep(TaskStep(id: 'compare', description: 'Compare results on screen', status: StepStatus.done, detail: '${products.length} products with prices'));
+    if (products.isEmpty) {
+      await _say('I searched $store for $q, but couldn\'t read product prices on this screen, $a.');
+      return 'No prices found';
+    }
+    final cheapest = [...products]..sort((x, y) => x.price.compareTo(y.price));
+    await _say('Top results: ${products.take(3).map((x) => '${x.short} for ${x.priceText}').join('; ')}. '
+        'The cheapest is ${cheapest.first.short} at ${cheapest.first.priceText}.', kind: 'command');
+    if (p['cart'] != true) return 'Compared ${products.length}';
+    final i = await _askChoice('Which one should I add to the cart?',
+        [for (final x in products.take(5)) x.short], details: [for (final x in products.take(5)) x.priceText], tr: tr);
+    final chosen = products[i];
+    // Open the product
+    var dump = await device.screenDump();
+    final idx = _findElement(dump['screen'] as String? ?? '', chosen.title.substring(0, chosen.title.length.clamp(0, 30)));
+    if (idx == null) throw Exception('I couldn\'t find that product on screen anymore.');
+    tr.addStep(TaskStep(id: 'open', description: 'Open "${chosen.short}"', status: StepStatus.done));
+    await device.screenAct('tap', index: idx);
+    await Future<void>.delayed(const Duration(seconds: 3));
+    // Find "Add to cart" (scroll a little if needed)
+    int? addIdx;
+    for (var tries = 0; tries < 4 && addIdx == null; tries++) {
+      dump = await device.screenDump();
+      addIdx = _findElement(dump['screen'] as String? ?? '', 'add to cart');
+      if (addIdx == null) await device.screenAct('scroll', dir: 'down');
+    }
+    if (addIdx == null) throw Exception('I opened the product, but couldn\'t find an "Add to cart" button.');
+    tr.addStep(TaskStep(id: 'cart', description: 'Tap "Add to cart"'));
+    tr.updateStep('cart', status: StepStatus.running);
+    await device.screenAct('tap', index: addIdx);
+    await Future<void>.delayed(const Duration(seconds: 2));
+    final after = ((await device.screenText())['lines'] as List? ?? const []).cast<String>().join(' ').toLowerCase();
+    final added = after.contains('added to cart') || after.contains('go to cart') || after.contains('added to your cart') || after.contains('item added');
+    tr.updateStep('cart', status: added ? StepStatus.done : StepStatus.failed, detail: added ? 'Confirmed on screen' : 'Could not confirm');
+    await _say(added
+        ? 'Added ${chosen.short} to your $store cart, $a. I haven\'t bought anything.'
+        : 'I tapped "Add to cart", $a, but couldn\'t confirm it on screen — please check.', kind: 'command');
+    return added ? 'Added to cart' : 'Unconfirmed';
+  }
+
+  static List<({String title, String short, int price, String priceText})> parseProducts(List<String> lines) {
+    final out = <({String title, String short, int price, String priceText})>[];
+    final priceRe = RegExp(r'₹\s?([\d,]+)');
+    for (var i = 0; i < lines.length; i++) {
+      final m = priceRe.firstMatch(lines[i]);
+      if (m == null) continue;
+      String? title;
+      for (var j = i - 1; j >= 0 && j >= i - 6; j--) {
+        final l = lines[j];
+        if (l.length > 20 && !priceRe.hasMatch(l) && !RegExp(r'(sponsored|^ad\b|rating|stars|delivery|bought|offer)', caseSensitive: false).hasMatch(l)) {
+          title = l;
+          break;
+        }
+      }
+      if (title == null || out.any((x) => x.title == title)) continue;
+      final price = int.tryParse(m.group(1)!.replaceAll(',', '')) ?? 0;
+      if (price <= 0) continue;
+      final short = title.split(RegExp(r'[,|(\-–]')).first.trim();
+      out.add((title: title, short: short.length > 60 ? '${short.substring(0, 60)}…' : short, price: price, priceText: '₹${m.group(1)}'));
+      if (out.length >= 8) break;
+    }
+    return out;
+  }
+
+  /// Index of the on-screen element whose label best matches [want] (word overlap), or null.
+  static int? _findElement(String screen, String want) {
+    final w = MemoryRepository.keywords(want).toSet();
+    final wl = want.toLowerCase();
+    int? best;
+    var bestScore = 0;
+    for (final line in screen.split('\n')) {
+      final m = RegExp(r'^\[(\d+)\]\s+\S+\s+"(.*)"').firstMatch(line);
+      if (m == null) continue;
+      final label = m.group(2)!.toLowerCase();
+      var score = MemoryRepository.keywords(label).where(w.contains).length;
+      if (label.contains(wl)) score += 3;
+      if (score > bestScore) {
+        bestScore = score;
+        best = int.parse(m.group(1)!);
+      }
+    }
+    return bestScore > 0 ? best : null;
+  }
+
+  Future<String?> _runScreenCommand(TaskTracker tr) async {
+    final a = settings.address;
+    final cmd = ScreenCommand.values.byName(tr.snapshot.params['cmd'] as String);
+    final arg = tr.snapshot.params['arg'] as String?;
+    if (!await device.accessibilityEnabled()) throw Exception('I need the LEO accessibility service to work with what\'s on screen.');
+    final under = assistMode; // invoked from the assistant panel → act on the app underneath
+    if (cmd == ScreenCommand.read) {
+      final t = await device.screenText(skipOwn: true);
+      if (t['ok'] != true) {
+        throw Exception(t['reason'] == 'blocked_app' ? 'I don\'t read banking or payment apps.' : 'I can\'t read this screen.');
+      }
+      final lines = ((t['lines'] as List?) ?? const []).cast<String>().where((l) => l.length > 2).toList();
+      tr.addStep(TaskStep(id: 'read', description: 'Read the screen', status: StepStatus.done, detail: '${lines.length} text items'));
+      if (lines.isEmpty) {
+        await _say('I don\'t see any text on this screen, $a.');
+        return 'Empty';
+      }
+      await _say(lines.take(12).join('. '), kind: 'screen');
+      return 'Read';
+    }
+    if (under) {
+      await device.closeAssist();
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+    }
+    tr.addStep(TaskStep(id: 'do', description: tr.snapshot.title));
+    tr.updateStep('do', status: StepStatus.running);
+    Map<String, dynamic> r;
+    switch (cmd) {
+      case ScreenCommand.scrollDown:
+        r = await device.screenAct('scroll', dir: 'down');
+      case ScreenCommand.scrollUp:
+        r = await device.screenAct('scroll', dir: 'up');
+      case ScreenCommand.back:
+        r = await device.screenAct('back');
+      case ScreenCommand.home:
+        r = await device.screenAct('home');
+      case ScreenCommand.type:
+        await device.screenDump();
+        r = await device.screenAct('type', text: arg ?? '');
+      case ScreenCommand.tap:
+        final dump = await device.screenDump();
+        final screen = dump['screen'] as String? ?? '';
+        final idx = _findElement(screen, arg ?? '');
+        if (idx == null) {
+          // Not a visible button: treat it as a task for the screen agent.
+          tr.updateStep('do', status: StepStatus.skipped, detail: 'No "$arg" on screen');
+          return _agentFor(tr, 'tap $arg');
+        }
+        final line = screen.split('\n').firstWhere((l) => l.startsWith('[$idx]'), orElse: () => '');
+        if (_sensitiveWords.hasMatch(line)) {
+          final ok = await _askApproval(tr,
+              ApprovalRequest(id: 'tap-${tr.snapshot.id}', actionType: 'phone.tap', title: 'Tap "$arg"', recipientId: '${dump['package']}#$idx', content: line),
+              'That will ${arg?.toLowerCase()}. Shall I go ahead, $a?');
+          if (ok.answer != _ApprovalAnswer.approve) {
+            await _say('Okay, I didn\'t tap it.');
+            return 'Not tapped';
+          }
+          approvals.consume('phone.tap', '${dump['package']}#$idx', line);
+          tr.setState(AgentState.running);
+        }
+        r = await device.screenAct('tap', index: idx);
+      case ScreenCommand.read:
+        r = const {'ok': true};
+    }
+    if (r['ok'] != true) throw Exception('That didn\'t work (${r['reason'] ?? 'unknown'}).');
+    tr.updateStep('do', status: StepStatus.done);
+    return 'Done';
+  }
+
+  Future<String?> _runReadChat(TaskTracker tr) async {
+    final a = settings.address;
+    final who = tr.snapshot.params['who'] as String;
+    tr.addStep(TaskStep(id: 'find', description: 'Find $who in contacts'));
+    final contacts = await _findContacts(tr, who);
+    if (contacts.isEmpty) throw Exception('I couldn\'t find $who in your contacts.');
+    var c = contacts.first;
+    if (contacts.length > 1) {
+      final i = await _askChoice('Whose chat should I read?', [for (final x in contacts) x.name], tr: tr);
+      c = contacts[i];
+    }
+    tr.updateStep('find', status: StepStatus.done, detail: c.name);
+    tr.addStep(const TaskStep(id: 'open', description: 'Open the WhatsApp chat'));
+    await tr.step('open', () => device.openWhatsAppChat('com.whatsapp', c.primaryNumber, ''));
+    await Future<void>.delayed(const Duration(seconds: 3));
+    final t = await device.screenText();
+    final noise = RegExp(r'^(online|typing…|today|yesterday|message|\d{1,2}:\d{2}\s?(am|pm)?|end-to-end encrypted.*|tap to.*|.*joined using.*)$', caseSensitive: false);
+    final lines = ((t['lines'] as List?) ?? const [])
+        .cast<String>()
+        .where((l) => l.length > 1 && !noise.hasMatch(l.trim()) && l.trim() != c.name)
+        .toList();
+    final last = lines.length > 6 ? lines.sublist(lines.length - 6) : lines;
+    tr.addStep(TaskStep(id: 'read', description: 'Read the latest messages', status: StepStatus.done, detail: '${last.length} lines'));
+    await _say(last.isEmpty ? 'I opened your chat with ${c.name}, but I can\'t see any messages, $a.' : 'Latest in your chat with ${c.name}: ${last.join('. ')}',
+        kind: 'screen');
+    return 'Read ${last.length}';
+  }
+
+  /// Contacts by name, with a fuzzy fallback for mis-heard names ("Rahool" → Rahul).
+  Future<List<ContactMatch>> _findContacts(TaskTracker tr, String name) async {
+    var st = await Permission.contacts.status;
+    if (!st.isGranted) st = await Permission.contacts.request();
+    if (!st.isGranted) throw Exception('I need Contacts permission to find $name.');
+    final exact = await device.searchContacts(name);
+    if (exact.isNotEmpty) return exact;
+    final first = name.split(' ').first.toLowerCase();
+    if (first.length < 3) return const [];
+    final broad = await device.searchContacts(first.substring(0, 2));
+    final scored = [
+      for (final c in broad)
+        (c, AppResolver.similarity(c.name.toLowerCase().split(' ').first, first))
+    ]..sort((x, y) => y.$2.compareTo(x.$2));
+    return [for (final s in scored) if (s.$2 >= 0.7) s.$1];
   }
 
   // ---- sign-in help: every step happens only after the user's answer. No passwords, no auto-OTP.
@@ -1648,7 +2102,7 @@ class JarvisOrchestrator extends ChangeNotifier {
       var st = await Permission.contacts.status;
       if (!st.isGranted) st = await Permission.contacts.request();
       if (!st.isGranted) throw Exception('I need Contacts permission to find $name.');
-      final all = await tr.control.guard(device.searchContacts(name));
+      final all = await tr.control.guard(_findContacts(tr, name));
       final exact = all.where((c) => c.name.toLowerCase() == name.toLowerCase()).toList();
       final firstName = all.where((c) => c.name.toLowerCase().split(' ').first == name.toLowerCase()).toList();
       final pool = exact.isNotEmpty ? exact : (firstName.isNotEmpty ? firstName : all);

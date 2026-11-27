@@ -166,7 +166,24 @@ object DeviceChannel {
             "llmGenerate" -> background(result) { LocalLlm.generate(app, call.argument<String>("prompt") ?: "") }
             "llmUnload" -> { LocalLlm.unload(); result.success(null) }
             // ---------------- generic screen control
-            "screenDump" -> background(result) { ScreenAgent.dump(call.argument<Int>("max") ?: 70) }
+            "screenDump" -> background(result) { ScreenAgent.dump(call.argument<Int>("max") ?: 70, call.argument<Boolean>("skipOwn") == true) }
+            "screenText" -> background(result) { ScreenAgent.readText(call.argument<Boolean>("skipOwn") == true) }
+            // ---------------- alarms / reminders / calls / files (local)
+            "dismissAlarm" -> result.success(PhoneExtras.dismissAlarm(app, call.argument<String>("mode") ?: "next",
+                call.argument<Int>("hour"), call.argument<Int>("minute"), call.argument<String>("label")))
+            "snoozeAlarm" -> result.success(PhoneExtras.snoozeAlarm(app, call.argument<Int>("minutes")))
+            "addReminder" -> result.success(PhoneExtras.addReminder(app, (call.argument<Number>("at")!!).toLong(), call.argument<String>("text")!!))
+            "listReminders" -> result.success(PhoneExtras.listReminders(app))
+            "deleteReminder" -> result.success(PhoneExtras.deleteReminder(app, call.argument<Int>("id")))
+            "exactAlarmsAllowed" -> result.success(PhoneExtras.exactAlarmsAllowed(app))
+            "openExactAlarmSettings" -> { PhoneExtras.openExactAlarmSettings(app); result.success(null) }
+            "answerCall" -> result.success(PhoneExtras.answerCall(app))
+            "endCall" -> result.success(PhoneExtras.endCall(app))
+            "callState" -> result.success(PhoneExtras.callState(app))
+            "allFilesAccess" -> result.success(PhoneExtras.allFilesAccess())
+            "openAllFilesSettings" -> { PhoneExtras.openAllFilesSettings(app); result.success(null) }
+            "findFiles" -> background(result) { PhoneExtras.findFiles(call.argument<String>("query") ?: "", call.argument<List<String>>("exts") ?: listOf("pdf")) }
+            "openFile" -> result.success(PhoneExtras.openFile(app, call.argument<String>("path")!!))
             "screenAct" -> background(result) {
                 ScreenAgent.act(app, call.argument<String>("type") ?: "", call.argument<Int>("index"),
                     call.argument<String>("text"), call.argument<String>("dir"), call.argument<String>("package"))

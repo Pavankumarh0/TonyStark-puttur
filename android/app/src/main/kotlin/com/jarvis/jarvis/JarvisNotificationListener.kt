@@ -13,6 +13,17 @@ import android.service.notification.StatusBarNotification
 class JarvisNotificationListener : NotificationListenerService() {
 
     override fun onListenerConnected() { instance = this }
+
+    /** Incoming call → tell LEO who is calling (so it can announce and accept "Leo, answer"). */
+    override fun onNotificationPosted(sbn: StatusBarNotification?) {
+        val n = sbn?.notification ?: return
+        if (n.category != Notification.CATEGORY_CALL) return
+        val ex = n.extras
+        val title = ex.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: return
+        val text = ex.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+        val incoming = text.contains("incoming", ignoreCase = true) || n.fullScreenIntent != null
+        if (incoming) DeviceChannel.emit(mapOf("type" to "incoming_call", "caller" to title, "package" to sbn.packageName))
+    }
     override fun onListenerDisconnected() { if (instance === this) instance = null }
     override fun onDestroy() { if (instance === this) instance = null; super.onDestroy() }
 
