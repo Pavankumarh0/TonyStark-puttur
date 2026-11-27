@@ -396,8 +396,18 @@ class JarvisOrchestrator extends ChangeNotifier {
       final text = await speechIn.listenOnce(
         noSpeechTimeout: timeout,
         onSpeechCaptured: () {
+          _turnClock
+            ..reset()
+            ..start();
           voice = VoicePhase.transcribing;
           notifyListeners();
+        },
+        // The user started talking: connect to OpenAI now in case the command needs it.
+        onSpeechStart: () {
+          if (ai.isConfigured) {
+            openAiBrain.warmUp();
+            ai.openai.warmUp();
+          }
         },
       );
       lastHeard = text;
@@ -412,7 +422,7 @@ class JarvisOrchestrator extends ChangeNotifier {
 
   Future<void> _untilNotSpeaking() async {
     while (speechOut.speaking) {
-      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
     }
   }
 
@@ -1470,7 +1480,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     }
     final brain = LocalAgentBrain(device, apps);
     tr.setParams({'brain': useLocal ? 'on-device' : 'gemini'});
-    await _say('On it, $a. ${useLocal ? 'Working on-device. ' : ''}I\'ll show each step — say "stop" any time.', kind: 'command');
+    _sayAhead('On it, $a. ${useLocal ? 'Working on-device. ' : ''}I\'ll show each step — say "stop" any time.', kind: 'command');
     final brainLabel = useLocal ? 'ON-DEVICE' : 'OPENAI';
     await device.overlayShow();
     try {
@@ -1485,7 +1495,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     final a = settings.address;
     final model = settings.openAiModel;
     tr.setParams({'brain': 'openai'});
-    await _say('On it, $a. I\'ll show each step — say "stop" any time.', kind: 'command');
+    _sayAhead('On it, $a. I\'ll show each step — say "stop" any time.', kind: 'command');
     await device.overlayShow();
     var n = 0;
     final agent = ScreenAgent(
@@ -2135,7 +2145,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     tr.addStep(TaskStep(id: 'open', description: 'Open $url'));
     final r = await tr.step('open', () => device.openUrl(url));
     if (r?['ok'] != true) throw Exception('No browser could open $url.');
-    await _say('Opening $site, $a.', kind: 'command');
+    _sayAhead('Opening $site, $a.', kind: 'command');
     if (then != null && then.isNotEmpty) {
       await Future<void>.delayed(const Duration(seconds: 3));
       return _agentFor(tr, '$then on $site');
@@ -3044,7 +3054,7 @@ class JarvisOrchestrator extends ChangeNotifier {
       tr.addStep(const TaskStep(id: 'verify', description: 'Verify message in chat'));
     }
     if (tr.snapshot.completedSteps.isEmpty) {
-      await _say('Certainly, ${settings.address}. Preparing a ${app.displayName} message for $recipientQuery.', kind: 'command');
+      _sayAhead('Certainly, ${settings.address}. Preparing a ${app.displayName} message for $recipientQuery.', kind: 'command');
     }
 
     await tr.step('app', () async {
@@ -3521,24 +3531,49 @@ class JarvisOrchestrator extends ChangeNotifier {
   static bool isPrivateSpeech(String text, String? kind) =>
       _privateKinds.contains(kind) || PrivacyFilter.redact(text).secrets.keys.any((k) => !k.startsWith('<QUOTE'));
 
+  /// LEO's lines are spoken one after another, never over each other — so a runner can start
+  /// speaking ("Preparing a WhatsApp message…") and keep working meanwhile ([_sayAhead]).
+  Future<void> _sayChain = Future.value();
+
+  /// Speaks without waiting for the speech to finish; later lines queue behind it.
+  void _sayAhead(String text, {String? kind}) => unawaited(_say(text, kind: kind));
+
   Future<void> _say(String text,
       {bool store = true, String route = 'local', String? kind, String extraStoredText = '', bool private = false}) async {
     final isPrivate = private || isPrivateSpeech(text, kind);
+    final lang = replyLanguage;
+    final stops = speechOut.stopCount;
     // Reply in the language the user spoke. Private content set to stay on the phone is never
     // sent for translation (it is spoken in English by the phone's own voice).
-    var shown = text;
-    final lang = replyLanguage;
-    if (lang != Lang.english && settings.replyInMyLanguage && !(isPrivate && settings.privateVoice)) {
-      shown = await translator.toLanguage(text, lang);
-    }
-    if (store) await _store('jarvis', '$shown$extraStoredText', route: route, kind: kind);
-    if (settings.speakResponses) {
-      await speechOut.speak(shown, private: isPrivate, languageCode: identical(shown, text) ? Lang.english : lang);
-      if (speechOut.lastError != null && speechOut.lastEngine == 'device') {
-        banner ??= speechOut.lastError;
+    final needsTranslation = lang != Lang.english && settings.replyInMyLanguage && !(isPrivate && settings.privateVoice);
+    final translated = needsTranslation ? translator.toLanguage(text, lang) : null; // starts now, even if queued
+    final prev = _sayChain;
+    final done = Completer<void>();
+    _sayChain = done.future;
+    try {
+      final shown = translated == null ? text : await translated;
+      await prev; // the line before this one finishes first
+      // Save to the conversation while speaking, not before (the screen still updates at once).
+      final saved = store ? _store('jarvis', '$shown$extraStoredText', route: route, kind: kind) : null;
+      if (settings.speakResponses && speechOut.stopCount == stops) {
+        // (Skipped if the user interrupted while this line was waiting its turn.)
+        if (_turnClock.isRunning) {
+          debugPrint('LEO timing: first reply ${_turnClock.elapsedMilliseconds}ms after speech ended');
+          _turnClock.stop();
+        }
+        await speechOut.speak(shown, private: isPrivate, languageCode: identical(shown, text) ? Lang.english : lang);
+        if (speechOut.lastError != null && speechOut.lastEngine == 'device') {
+          banner ??= speechOut.lastError;
+        }
       }
+      await saved;
+    } finally {
+      done.complete();
     }
   }
+
+  /// From the end of the user's speech to LEO's first reply (debug timing only; no content logged).
+  final Stopwatch _turnClock = Stopwatch();
 
   // ------------------------------------------------------------------ history helpers
   Future<void> reloadSession() async {

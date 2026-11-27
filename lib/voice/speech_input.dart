@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
 import '../data/memory_repository.dart';
 import '../data/settings_store.dart';
 import 'language.dart';
@@ -29,6 +31,7 @@ class SpeechInput {
   /// Language of the conversation, from the last utterance (en-IN, hi-IN or kn-IN).
   String lastLanguage = Lang.english;
   String? lastDetected;
+  int? lastSttMs;
   double? lastProbability;
 
   bool get isConfigured => settings.hasSecret(SecretKey.sarvam);
@@ -37,12 +40,21 @@ class SpeechInput {
   Future<String?> listenOnce({
     Duration noSpeechTimeout = const Duration(seconds: 6),
     void Function()? onSpeechCaptured,
+    void Function()? onSpeechStart,
   }) async {
     final key = settings.secret(SecretKey.sarvam);
     if (key == null || key.isEmpty) {
       throw SpeechInputException('Sarvam API key is not set. Add it in Settings to use voice input.');
     }
-    final samples = await mic.captureUtterance(noSpeechTimeout: noSpeechTimeout);
+    final samples = await mic.captureUtterance(
+      noSpeechTimeout: noSpeechTimeout,
+      // While the user is still talking, open the network connections the next steps will use.
+      onSpeechStart: () {
+        sarvam.warmUp();
+        onSpeechStart?.call();
+      },
+    );
+    final sw = Stopwatch()..start();
     if (samples == null) return null;
     onSpeechCaptured?.call();
     final seconds = samples.length / MicEngine.sampleRate;
@@ -58,6 +70,8 @@ class SpeechInput {
         keyterms: keyterms.toList(),
       );
       unawaited(memory.logVoiceUsage('stt', seconds, true));
+      lastSttMs = sw.elapsedMilliseconds;
+      debugPrint('LEO timing: stt ${lastSttMs}ms for ${seconds.toStringAsFixed(1)}s audio'); // no content
       if (r.text.isEmpty) return null;
       lastDetected = r.languageCode;
       lastProbability = r.probability;

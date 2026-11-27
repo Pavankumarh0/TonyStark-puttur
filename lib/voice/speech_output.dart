@@ -77,10 +77,25 @@ class SpeechOutput extends ChangeNotifier {
 
   String _deviceLang = 'en-IN';
 
+  // Recently spoken audio, so phrases LEO says often ("Anything else, sir?", "WhatsApp is open") play
+  // instantly instead of waiting ~1 s for synthesis. Short, non-private lines only; memory only.
+  final _audioCache = <String, Uint8List>{}; // insertion-ordered: oldest first
+  static const _cacheMaxEntries = 40;
+  static const _cacheMaxChars = 220;
+
+  /// Bumped by [stop]; lets callers drop speech that was queued before an interruption.
+  int stopCount = 0;
+
   Future<void> _speakSarvam(String text, String key, int gen, String languageCode) async {
-    final chunks = _chunk(text, 450);
+    final chunks = chunkForSpeech(text, 450);
     // Pipeline: synthesise the next chunk while the current one plays.
     Future<Uint8List> synth(String c) async {
+      final cacheKey = '${settings.sarvamTtsModel}|${settings.sarvamSpeaker}|${settings.ttsPace}|$languageCode|$c';
+      final hit = _audioCache.remove(cacheKey);
+      if (hit != null) {
+        _audioCache[cacheKey] = hit; // most recently used
+        return hit;
+      }
       try {
         final a = await sarvam.synthesize(
           apiKey: key,
@@ -91,6 +106,12 @@ class SpeechOutput extends ChangeNotifier {
           pace: settings.ttsPace,
         );
         unawaited(memory.logVoiceUsage('tts', c.length.toDouble(), true));
+        if (c.length <= _cacheMaxChars) {
+          _audioCache[cacheKey] = a;
+          while (_audioCache.length > _cacheMaxEntries) {
+            _audioCache.remove(_audioCache.keys.first);
+          }
+        }
         return a;
       } catch (e) {
         unawaited(memory.logVoiceUsage('tts', c.length.toDouble(), false));
@@ -120,7 +141,8 @@ class SpeechOutput extends ChangeNotifier {
   /// Interrupts speech immediately.
   Future<void> stop() async {
     _generation++;
-    sarvam.cancelInFlight();
+    stopCount++;
+    sarvam.cancelSpeech();
     await _player.stop();
     await _tts.stop();
     _set(false);
@@ -137,6 +159,18 @@ class SpeechOutput extends ChangeNotifier {
       .replaceAll(RegExp(r'\[(.*?)\]\(.*?\)'), r'$1')
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
+
+  /// Splits [text] for synthesis. A long reply's first sentence goes alone (when short), so playback
+  /// starts sooner; the rest is synthesised while it plays.
+  static List<String> chunkForSpeech(String text, int max) {
+    final parts = _chunk(text, max);
+    if (parts.length == 1 && text.length <= 200) return parts;
+    final m = RegExp(r'^.{20,180}?[.!?।](\s|$)').firstMatch(text);
+    if (m == null) return parts;
+    final first = m.group(0)!.trim();
+    final rest = text.substring(m.end).trim();
+    return rest.isEmpty ? [first] : [first, ..._chunk(rest, max)];
+  }
 
   static List<String> _chunk(String text, int max) {
     if (text.length <= max) return [text];

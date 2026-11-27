@@ -155,6 +155,7 @@ class MicEngine extends ChangeNotifier {
     Duration noSpeechTimeout = const Duration(seconds: 6),
     Duration maxDuration = const Duration(seconds: 15),
     Duration endSilence = const Duration(milliseconds: 900),
+    void Function()? onSpeechStart,
   }) async {
     if (!_running) await start();
     _capture?.finish(null);
@@ -162,6 +163,7 @@ class MicEngine extends ChangeNotifier {
       noSpeechFrames: (noSpeechTimeout.inMilliseconds / 1000 * _framesPerSecond).round(),
       maxFrames: (maxDuration.inMilliseconds / 1000 * _framesPerSecond).round(),
       endSilenceFrames: (endSilence.inMilliseconds / 1000 * _framesPerSecond).round(),
+      onSpeechStart: onSpeechStart,
     );
     _capture = c;
     notifyListeners();
@@ -216,6 +218,7 @@ class MicEngine extends ChangeNotifier {
   /// While LEO is speaking, the recorder ignores audio so it never transcribes its own voice.
   /// (The wake word stays active so "Leo" can still barge in.)
   bool captureMuted = false;
+  static const _keepSilenceFrames = 8; // ≈256 ms of trailing silence kept
 
   void _feedCapture(_Capture c, List<int> frame, double rms) {
     if (captureMuted) {
@@ -230,6 +233,7 @@ class MicEngine extends ChangeNotifier {
         c.loudStreak++;
         if (c.loudStreak >= 2) {
           c.speechStarted = true;
+          c.onSpeechStart?.call();
           for (final f in _preRoll) {
             c.samples.addAll(f);
           }
@@ -249,8 +253,13 @@ class MicEngine extends ChangeNotifier {
     c.speechFrames++;
     c.silentStreak = rms < end ? c.silentStreak + 1 : 0;
     if (c.silentStreak >= c.endSilenceFrames || c.speechFrames >= c.maxFrames) {
-      // Need at least ~250 ms of speech to be worth transcribing.
-      c.finish(c.speechFrames > 8 ? List<int>.from(c.samples) : null);
+      // Need at least ~250 ms of speech to be worth transcribing. The trailing silence that ended the
+      // capture is cut to ~250 ms: less audio to upload and for Sarvam to process, same words.
+      var keep = c.samples.length;
+      if (c.silentStreak >= c.endSilenceFrames) {
+        keep -= max(0, c.silentStreak - _keepSilenceFrames) * frame.length;
+      }
+      c.finish(c.speechFrames > 8 ? List<int>.from(c.samples.take(keep)) : null);
       _capture = null;
       notifyListeners();
     }
@@ -269,6 +278,7 @@ class _Capture {
   final int noSpeechFrames;
   final int maxFrames;
   final int endSilenceFrames;
+  final void Function()? onSpeechStart;
   final done = Completer<List<int>?>();
   final List<int> samples = [];
   int frames = 0;
@@ -277,7 +287,7 @@ class _Capture {
   int silentStreak = 0;
   bool speechStarted = false;
 
-  _Capture({required this.noSpeechFrames, required this.maxFrames, required this.endSilenceFrames});
+  _Capture({required this.noSpeechFrames, required this.maxFrames, required this.endSilenceFrames, this.onSpeechStart});
 
   void finish(List<int>? r) {
     if (!done.isCompleted) done.complete(r);

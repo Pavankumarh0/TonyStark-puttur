@@ -79,7 +79,20 @@ object WhatsAppAutomator {
                     ?: return result("failed", "Could not find WhatsApp's search box")
                 setText(input, name)
                 trace += "searched \"$name\""
-                Thread.sleep(1600)
+                // Results filter in as WhatsApp searches: continue once the list has stopped changing
+                // (same rows on three looks in a row), never later than the old fixed 1.6 s.
+                val searchStart = System.currentTimeMillis()
+                Thread.sleep(450)
+                var lastNames: List<String>? = null
+                var stable = 0
+                while (System.currentTimeMillis() - searchStart < 1600) {
+                    checkCancel()
+                    val names = svc.rootFor(pkg)?.let { r -> resultRows(r, pkg).map { it.first } }
+                    stable = if (names != null && names.isNotEmpty() && names == lastNames) stable + 1 else 0
+                    if (stable >= 2) break
+                    lastNames = names
+                    Thread.sleep(200)
+                }
                 checkCancel()
                 val root = svc.rootFor(pkg) ?: return result("failed", "WhatsApp window lost")
                 val rows = resultRows(root, pkg)
@@ -144,7 +157,7 @@ object WhatsAppAutomator {
         while (System.currentTimeMillis() < end) {
             checkCancel()
             svc.rootFor(pkg)?.let { root -> probe(root)?.let { return it } }
-            Thread.sleep(250)
+            Thread.sleep(120)
         }
         return null
     }

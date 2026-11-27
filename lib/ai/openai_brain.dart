@@ -34,6 +34,17 @@ class OpenAiBrain {
     _client = http.Client();
   }
 
+  DateTime? _warmAt;
+
+  /// Opens the TLS connection to OpenAI ahead of a likely request (while the user is still speaking).
+  /// Sends no key, text or data — just connects. At most once every 10 s.
+  void warmUp() {
+    final now = DateTime.now();
+    if (_warmAt != null && now.difference(_warmAt!) < const Duration(seconds: 10)) return;
+    _warmAt = now;
+    unawaited(_client.head(Uri.parse('https://api.openai.com/v1/models')).timeout(const Duration(seconds: 5)).then((_) {}, onError: (_) {}));
+  }
+
   /// General chat completion (writing, answers, routing, agent steps).
   Future<({String text, int? input, int? output, int? cached, String? finish, int ms})> chat({
     required String apiKey,

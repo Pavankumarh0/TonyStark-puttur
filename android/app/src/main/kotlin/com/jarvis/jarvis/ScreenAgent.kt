@@ -317,7 +317,44 @@ object ScreenAgent {
             "wait" -> { Thread.sleep(1500); true }
             else -> return mapOf("ok" to false, "reason" to "unknown_action")
         }
-        Thread.sleep(if (type == "open_app") 1800 else 900) // let the UI settle before the next look
+        // Let the UI settle before the next look: continue as soon as the screen has stopped changing,
+        // never longer than the old fixed wait (1.8 s after opening an app, 0.9 s otherwise).
+        if (type == "open_app") settle(s, minMs = 700, maxMs = 1800, wantPkg = pkg) else settle(s, minMs = 300, maxMs = 900)
         return mapOf("ok" to ok)
+    }
+
+    /** Waits until two looks in a row (150 ms apart) show the same screen, between [minMs] and [maxMs]. */
+    private fun settle(s: JarvisAccessibilityService, minMs: Long, maxMs: Long, wantPkg: String? = null) {
+        val start = System.currentTimeMillis()
+        Thread.sleep(minMs)
+        var last: Int? = null
+        var same = 0
+        while (System.currentTimeMillis() - start < maxMs) {
+            val root = try { targetRoot(s, true) } catch (_: Exception) { null }
+            val sig = root?.let { signature(it) }
+            val pkgOk = wantPkg == null || root?.packageName?.toString() == wantPkg
+            same = if (sig != null && pkgOk && sig == last) same + 1 else 0
+            if (same >= 2) return
+            last = sig
+            Thread.sleep(150)
+        }
+    }
+
+    /** Cheap fingerprint of what is on screen: element types, texts and positions (first 300 nodes). */
+    private fun signature(root: AccessibilityNodeInfo): Int {
+        var h = root.packageName?.hashCode() ?: 0
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.addLast(root)
+        var n = 0
+        val r = Rect()
+        while (stack.isNotEmpty() && n < 300) {
+            val x = stack.removeLast(); n++
+            x.getBoundsInScreen(r)
+            h = 31 * h + (x.className?.hashCode() ?: 0)
+            h = 31 * h + (x.text?.toString()?.hashCode() ?: 0)
+            h = 31 * h + r.hashCode()
+            for (i in x.childCount - 1 downTo 0) x.getChild(i)?.let { stack.addLast(it) }
+        }
+        return 31 * h + n
     }
 }

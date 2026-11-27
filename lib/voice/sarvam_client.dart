@@ -23,11 +23,33 @@ class SttResult {
 /// Only receives audio AFTER the offline wake word fired or the user tapped the mic.
 class SarvamClient {
   static const _base = 'https://api.sarvam.ai';
-  http.Client _client = http.Client();
+  // Separate connection pools: stopping LEO's voice (barge-in) must not drop the warm connection that
+  // the very next speech-to-text request is about to use.
+  http.Client _client = http.Client(); // speech-to-text + translation
+  http.Client _tts = http.Client();
+  DateTime? _warmAt;
 
+  /// Cancels speech-to-text / translation in flight.
   void cancelInFlight() {
     _client.close();
     _client = http.Client();
+  }
+
+  /// Cancels voice synthesis in flight (keeps the speech-to-text connection warm).
+  void cancelSpeech() {
+    _tts.close();
+    _tts = http.Client();
+  }
+
+  /// Opens the TLS connection ahead of time (while the user is still speaking), so the real request
+  /// skips the handshake. Sends no audio, text or key. At most once every 10 s.
+  void warmUp() {
+    final now = DateTime.now();
+    if (_warmAt != null && now.difference(_warmAt!) < const Duration(seconds: 10)) return;
+    _warmAt = now;
+    for (final c in [_client, _tts]) {
+      unawaited(c.head(Uri.parse(_base)).timeout(const Duration(seconds: 5)).then((_) {}, onError: (_) {}));
+    }
   }
 
   Future<String> transcribe({
@@ -130,7 +152,7 @@ class SarvamClient {
     };
     final http.Response res;
     try {
-      res = await _client
+      res = await _tts
           .post(Uri.parse('$_base/text-to-speech'),
               headers: {'api-subscription-key': apiKey, 'Content-Type': 'application/json'}, body: jsonEncode(body))
           .timeout(const Duration(seconds: 25));
