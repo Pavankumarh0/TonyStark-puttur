@@ -255,3 +255,18 @@ class SettingsPanelIntent extends LocalIntent {
   final bool? on;
   const SettingsPanelIntent(this.kind, {this.on});
 }
+
+/// Reply to someone who messaged you, through the chat notification's reply box (local).
+class ReplyIntent extends LocalIntent {
+  final String who;
+  final String? message;
+  const ReplyIntent(this.who, {this.message});
+}
+
+/// Anything else on the phone: handled by the screen agent (needs AI to plan the steps).
+class PhoneTaskIntent extends LocalIntent {
+  final String goal;
+  const PhoneTaskIntent(this.goal);
+  @override
+  bool get requiresAi => true;
+}

@@ -84,6 +84,7 @@ class LocalIntentEngine {
         _localInfo(n) ??
         _memory(text, n) ??
         _write(text, n) ??
+        _phoneTask(text, n) ??
         _knowledge(text, n) ??
         UnknownIntent(text);
   }
@@ -196,6 +197,14 @@ class LocalIntentEngine {
 
   // ---------------------------------------------------------------- phone actions (local)
   LocalIntent? _phoneActions(String text, String n) {
+    // Reply to a message from the notification
+    final rp = RegExp(r"^(?:reply|respond|answer)(?: back)? to\s+(.+?)(?:\s*(?:,|saying|that|with|and say|telling (?:him|her|them))\s+(.+))?$", caseSensitive: false)
+        .firstMatch(text);
+    if (rp != null && rp.group(1)!.split(' ').length <= 5) {
+      final who = rp.group(1)!.replaceAll(RegExp(r"'s (message|text|chat)$|\s+(on|in) (whatsapp|messages|telegram|instagram)$", caseSensitive: false), '').trim();
+      final msg = rp.group(2)?.trim();
+      return ReplyIntent(_cap(who), message: msg == null || msg.isEmpty ? null : _stripQuotes(msg));
+    }
     // Timer
     if (RegExp(r"^(set|start|put|create)( a| an| the)? timer\b|^timer for\b|^countdown( for)?\b").hasMatch(n)) {
       final d = TimeParser.duration(n);
@@ -258,7 +267,7 @@ class LocalIntentEngine {
     if (RegExp(r"^(take|click|capture)( a)? (photo|picture|pic|snap)").hasMatch(n)) return const CameraIntent();
     if (RegExp(r"^(record|take|start)( a)? video").hasMatch(n)) return const CameraIntent(video: true);
     // Connectivity / settings panels
-    final sp = RegExp(r"^(?:turn|switch|put)\s+(on|off)\s+(?:the\s+|my\s+)?(wi ?fi|wifi|bluetooth|mobile data|data|hotspot|nfc|location|gps|airplane mode|flight mode)$|^(?:turn|switch)\s+(?:the\s+|my\s+)?(wi ?fi|wifi|bluetooth|mobile data|data|hotspot|nfc|location|gps|airplane mode|flight mode)\s+(on|off)$|^(?:open\s+)?(wi ?fi|wifi|bluetooth|hotspot|location|display|brightness)\s+settings$")
+    final sp = RegExp(r"^(?:turn|switch|put)\s+(on|off)\s+(?:the\s+|my\s+)?(wi ?fi|wifi|bluetooth|mobile data|data|hotspot|nfc|location|gps|airplane mode|flight mode|do not disturb|dnd|power saving|battery saver|dark mode|auto rotate|rotation)(?: mode)?$|^(?:turn|switch)\s+(?:the\s+|my\s+)?(wi ?fi|wifi|bluetooth|mobile data|data|hotspot|nfc|location|gps|airplane mode|flight mode|do not disturb|dnd|power saving|battery saver|dark mode|auto rotate|rotation)(?: mode)?\s+(on|off)$|^(?:open\s+)?(wi ?fi|wifi|bluetooth|hotspot|location|display|brightness)\s+settings$")
         .firstMatch(n);
     if (sp != null) {
       final raw = sp.group(2) ?? sp.group(3) ?? sp.group(5) ?? '';
@@ -272,6 +281,10 @@ class LocalIntentEngine {
         'location' || 'gps' => 'location',
         'airplanemode' || 'flightmode' => 'airplane',
         'display' || 'brightness' => 'display',
+        'donotdisturb' || 'dnd' => 'dnd',
+        'powersaving' || 'batterysaver' => 'power_saving',
+        'darkmode' => 'dark_mode',
+        'autorotate' || 'rotation' => 'rotation',
         _ => 'settings',
       };
       return SettingsPanelIntent(kind, on: onOff == null ? null : onOff == 'on');
@@ -479,6 +492,14 @@ class LocalIntentEngine {
       caseSensitive: false,
     ).firstMatch(text);
     if (st != null) return ContextStatementIntent(text);
+    return null;
+  }
+
+  // ---------------------------------------------------------------- generic phone task (screen agent)
+  LocalIntent? _phoneTask(String text, String n) {
+    final verbs = RegExp(r"^(open|go to|in|on|inside|delete|remove|archive|clear|find|show me|look for|search (in|on|my|for)|forward|share|post|upload|like|follow|unfollow|subscribe|download|install|uninstall|update|mark|block|unblock|mute|unmute|pin|unpin|save|star|add|create|change|set|enable|disable|send|compose|email|mail|book|order|scroll|tap|click|press|go back|close|switch to)\b");
+    final appish = RegExp(r"\b(gallery|photos?|pictures?|gmail|email|mail|inbox|whatsapp|instagram|facebook|telegram|chrome|browser|settings|youtube|spotify|maps|calendar|contacts|files?|notes?|play store|camera|messages?|sms|snapchat|twitter|linkedin|amazon|flipkart|swiggy|zomato|uber|ola)\b");
+    if (verbs.hasMatch(n) && (appish.hasMatch(n) || n.split(' ').length >= 4)) return PhoneTaskIntent(text);
     return null;
   }
 

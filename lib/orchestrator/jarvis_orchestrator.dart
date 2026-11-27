@@ -500,6 +500,10 @@ class JarvisOrchestrator extends ChangeNotifier {
       case SettingsPanelIntent(:final kind, :final on):
         _startTask('Open ${kind == 'wifi' ? 'Wi-Fi' : kind} controls', 'phone_action', TaskRoute.local,
             {'action': 'panel', 'kind': kind, 'on': on});
+      case ReplyIntent(:final who, :final message):
+        _startTask('Reply to $who', 'reply', TaskRoute.local, {'who': who, 'message': message});
+      case PhoneTaskIntent(:final goal):
+        _startTask(_titleFrom(goal), 'agent', TaskRoute.ai, {'goal': goal});
       case SignInIntent(:final appName):
         _startTask('Sign in to $appName', 'sign_in', TaskRoute.local, {'query': appName});
       case CallIntent(:final name):
@@ -541,7 +545,8 @@ class JarvisOrchestrator extends ChangeNotifier {
         OpenAppIntent() || SendMessageIntent() || PlayMediaIntent() || CallIntent() || CheckMessagesIntent() ||
         MediaControlIntent() || SetAlarmIntent() || SetTimerIntent() || ScheduleMeetingIntent() || StartMeetIntent() ||
         NavigateIntent() || WebSearchIntent() || FlashlightIntent() || CameraIntent() || SettingsPanelIntent() ||
-        SignInIntent() => 'command',
+        SignInIntent() || ReplyIntent() => 'command',
+        PhoneTaskIntent() => 'agent',
         KnowledgeIntent() => 'knowledge',
         WriteIntent() => 'write',
         RememberIntent() => 'remember',
@@ -909,6 +914,8 @@ class JarvisOrchestrator extends ChangeNotifier {
     'set_alarm': _runSetAlarm,
     'schedule': _runSchedule,
     'phone_action': _runPhoneAction,
+    'reply': _runReply,
+    'agent': _runAgent,
   };
 
   static const _kindToLabel = {
@@ -1123,6 +1130,208 @@ class JarvisOrchestrator extends ChangeNotifier {
     return 'Results opened (not auto-played)';
   }
 
+  static String _kindLabel(String? k) => switch (k) {
+        'wifi' => 'Wi-Fi',
+        'data' => 'mobile data',
+        'dnd' => 'Do Not Disturb',
+        'power_saving' => 'power saving',
+        'dark_mode' => 'dark mode',
+        'rotation' => 'auto-rotate',
+        'airplane' => 'airplane mode',
+        _ => k ?? 'settings',
+      };
+
+  /// Switches a feature via Quick Settings (accessibility) and reports the REAL resulting state;
+  /// falls back to opening the settings panel.
+  Future<Map<String, dynamic>> _toggleOrPanel(TaskTracker tr, String kind, bool? on) async {
+    const switchable = {'wifi', 'bluetooth', 'data', 'hotspot', 'airplane', 'location', 'dnd', 'power_saving', 'dark_mode', 'rotation', 'nfc'};
+    if (on != null && switchable.contains(kind) && await device.accessibilityEnabled()) {
+      final r = await device.quickToggle(kind, on);
+      final label = _kindLabel(kind);
+      final word = on ? 'on' : 'off';
+      final line = switch (r['status']) {
+        'already' => '$label is already $word, ${settings.address}.',
+        'changed' => '$label is $word now.',
+        'unknown' => 'I tapped the $label switch, but couldn\'t confirm its state — please check.',
+        _ => null,
+      };
+      if (line != null) return {'ok': true, 'line': line};
+      if (r['status'] == 'unchanged') return {'ok': true, 'line': '${r['reason']}'};
+    }
+    return device.panel(kind);
+  }
+
+  // ---- runner: reply to a message via its notification (local)
+  Future<String?> _runReply(TaskTracker tr) async {
+    final a = settings.address;
+    final who = tr.snapshot.params['who'] as String;
+    tr.addStep(TaskStep(id: 'find', description: 'Find the latest message from $who'));
+    tr.addStep(const TaskStep(id: 'approval', description: 'Get your approval'));
+    tr.addStep(const TaskStep(id: 'send', description: 'Send the reply', irreversible: true));
+    if (!await device.notificationAccess()) {
+      throw Exception('I need notification access to reply from messages. Turn on "LEO message reader" in Permissions.');
+    }
+    final targets = await tr.step('find', () => device.replyTargets(who)) ?? const [];
+    if (targets.isEmpty) {
+      tr.updateStep('find', status: StepStatus.failed, detail: 'No unread message with a reply box');
+      throw Exception('I don\'t see a recent message from $who that I can reply to. If you want, say "send a WhatsApp message to $who".');
+    }
+    var t = targets.first;
+    if (targets.length > 1) {
+      final i = await _askChoice('Which chat should I reply to?', [for (final x in targets) '${x['title']}'],
+          details: [for (final x in targets) '${x['package']}'], tr: tr);
+      t = targets[i];
+    }
+    tr.updateStep('find', detail: '${t['title']}');
+    var message = tr.snapshot.params['message'] as String?;
+    message ??= await _askFreeText(tr, 'What should I reply to ${t['title']}, $a?');
+    while (true) {
+      final reply = await _askApproval(
+          tr,
+          ApprovalRequest(
+              id: 'reply-${tr.snapshot.id}-${DateTime.now().millisecondsSinceEpoch}',
+              actionType: 'message.reply',
+              title: 'Reply to ${t['title']}',
+              recipientId: '${t['key']}',
+              recipientLabel: '${t['title']}',
+              content: message,
+              appLabel: '${t['package']}'.contains('whatsapp') ? 'WhatsApp' : 'Messages'),
+          'Reply to ${t['title']}: "$message". Shall I send it, $a?');
+      if (reply.answer == _ApprovalAnswer.edit) {
+        message = reply.newText;
+        continue;
+      }
+      if (reply.answer != _ApprovalAnswer.approve) {
+        tr.cancelRemaining();
+        tr.setState(AgentState.cancelled, result: 'Not sent');
+        await _say('Okay, I won\'t reply.');
+        return 'Not sent';
+      }
+      break;
+    }
+    tr.setState(AgentState.running);
+    tr.updateStep('approval', status: StepStatus.done);
+    if (!approvals.consume('message.reply', '${t['key']}', message)) throw Exception('The approval no longer matches.');
+    tr.updateStep('send', status: StepStatus.running);
+    final r = await device.notificationReply('${t['key']}', message!);
+    if (r['ok'] != true) {
+      tr.updateStep('send', status: StepStatus.failed, detail: '${r['reason']}');
+      throw Exception('The reply wasn\'t sent: ${r['reason']}');
+    }
+    tr.updateStep('send', status: StepStatus.done, detail: 'Sent through the notification\'s reply box');
+    await _say('Replied to ${t['title']}, $a.', kind: 'command');
+    return 'Replied';
+  }
+
+  // ---- runner: generic screen agent (AI plans one step at a time; LEO executes with safety rails)
+  static final _sensitiveWords = RegExp(
+      r'\b(send|delete|remove|discard|trash|archive all|pay|payment|buy|purchase|order|place order|checkout|post|publish|share|submit|confirm|transfer|uninstall|book|reserve|forward|reply all|unsubscribe|block|report|clear all|factory reset|erase)\b',
+      caseSensitive: false);
+
+  Future<String?> _runAgent(TaskTracker tr) async {
+    final a = settings.address;
+    final goal = tr.snapshot.params['goal'] as String;
+    if (!await device.accessibilityEnabled()) {
+      throw Exception('To operate apps for you I need the LEO accessibility service. Turn it on in Permissions.');
+    }
+    if (!ai.isConfigured) throw AiNotConfigured();
+    await _say('On it, $a. I\'ll show each step — say "stop" any time.', kind: 'command');
+    final history = <String>[];
+    final installed = (await apps.apps()).map((x) => x.label).toList();
+    const maxSteps = 18;
+    for (var step = 1; step <= maxSteps; step++) {
+      await tr.control.checkpoint();
+      final dump = await device.screenDump();
+      if (dump['ok'] != true) {
+        if (dump['reason'] == 'blocked_app') {
+          throw Exception('For your safety I don\'t operate banking or payment apps (${dump['package']}). Please do that part yourself.');
+        }
+        throw Exception('I can\'t read the screen (${dump['reason']}).');
+      }
+      final plan = await tr.control.guard(ai.agentStep(
+        goal: goal,
+        screen: dump['screen'] as String? ?? '',
+        package: dump['package'] as String?,
+        history: history.length > 8 ? history.sublist(history.length - 8) : history,
+        apps: installed,
+      ));
+      if (plan['done'] == true) {
+        final summary = (plan['summary'] as String?)?.trim();
+        tr.addStep(TaskStep(id: 'done', description: 'Finished', status: StepStatus.done, detail: summary));
+        await _say(summary == null || summary.isEmpty ? 'Done, $a.' : '$summary', route: 'ai', kind: 'agent');
+        return summary ?? 'Done';
+      }
+      final ask = (plan['ask'] as String?)?.trim();
+      if (ask != null && ask.isNotEmpty) {
+        final answer = await _askFreeText(tr, ask);
+        history.add('$step. asked user "$ask" → "$answer"');
+        continue;
+      }
+      final act = (plan['action'] as Map?)?.cast<String, dynamic>();
+      final type = act?['type'] as String?;
+      if (type == null) {
+        history.add('$step. (no action returned)');
+        continue;
+      }
+      final index = (act!['index'] as num?)?.toInt();
+      final text = act['text'] as String?;
+      final describe = ((plan['describe'] as String?) ?? '$type ${index ?? ''}').trim();
+      String? pkg;
+      if (type == 'open_app') {
+        final found = await apps.resolve('${act['app'] ?? text ?? ''}');
+        if (found.isEmpty) {
+          history.add('$step. open_app "${act['app']}" → not installed');
+          continue;
+        }
+        pkg = found.first.packageName;
+        if (await device.isBlockedApp(pkg)) {
+          throw Exception('For your safety I don\'t operate banking or payment apps (${found.first.label}).');
+        }
+      }
+      // Safety: anything irreversible needs the user's explicit OK, described exactly.
+      final screenLine = index == null
+          ? ''
+          : ((dump['screen'] as String).split('\n').firstWhere((l) => l.startsWith('[$index]'), orElse: () => ''));
+      final sensitive = plan['sensitive'] == true ||
+          (type == 'tap' && _sensitiveWords.hasMatch(screenLine)) ||
+          (type == 'submit' && _sensitiveWords.hasMatch(describe));
+      final sid = 's$step';
+      tr.addStep(TaskStep(id: sid, description: describe, irreversible: sensitive));
+      if (sensitive) {
+        final reply = await _askApproval(
+            tr,
+            ApprovalRequest(
+                id: 'agent-${tr.snapshot.id}-$step',
+                actionType: 'phone.$type',
+                title: describe,
+                recipientId: '${dump['package']}#$index',
+                recipientLabel: '${dump['package']}',
+                content: screenLine.isEmpty ? describe : screenLine),
+            '$describe. Shall I go ahead, $a?');
+        if (reply.answer != _ApprovalAnswer.approve) {
+          tr.updateStep(sid, status: StepStatus.skipped, detail: 'You said no');
+          tr.cancelRemaining();
+          tr.setState(AgentState.cancelled, result: 'Stopped before: $describe');
+          await _say('Okay, I stopped before that step. Nothing was ${type == 'tap' ? 'pressed' : 'done'}.');
+          return 'Stopped by user';
+        }
+        approvals.consume('phone.$type', '${dump['package']}#$index', screenLine.isEmpty ? describe : screenLine);
+        tr.setState(AgentState.running);
+      }
+      tr.updateStep(sid, status: StepStatus.running);
+      final r = await device.screenAct(type, index: index, text: text, dir: act['dir'] as String?, package: pkg);
+      final ok = r['ok'] == true;
+      tr.updateStep(sid, status: ok ? StepStatus.done : StepStatus.failed, detail: ok ? null : '${r['reason'] ?? 'failed'}');
+      if (r['reason'] == 'password_field') {
+        await _say('This needs a password, $a. For your security I never type passwords — please enter it, then say "continue".');
+        throw TaskAbort(AgentState.interrupted);
+      }
+      history.add('$step. $type${index != null ? ' [$index]' : ''}${text != null ? ' "$text"' : ''} — $describe → ${ok ? 'ok' : 'FAILED ${r['reason'] ?? ''}'}');
+    }
+    await _say('I couldn\'t finish that within $maxSteps steps, $a. I\'ve stopped; the steps I took are on screen.');
+    return 'Step limit reached';
+  }
+
   // ---- runner: alarm / reminder (local)
   Future<String?> _runSetAlarm(TaskTracker tr) async {
     final a = settings.address;
@@ -1242,7 +1451,7 @@ class JarvisOrchestrator extends ChangeNotifier {
       'search' => await device.webSearch(p['query'] as String),
       'torch' => await device.torch(p['on'] == true),
       'camera' => await device.camera(selfie: p['selfie'] == true, video: p['video'] == true),
-      'panel' => await device.panel(p['kind'] as String),
+      'panel' => await _toggleOrPanel(tr, p['kind'] as String, p['on'] as bool?),
       _ => const <String, dynamic>{'ok': false, 'reason': 'Unsupported action'},
     };
     if (r['ok'] != true) {
@@ -1258,9 +1467,10 @@ class JarvisOrchestrator extends ChangeNotifier {
       'search' => 'Here are the results for ${p['query']}.',
       'torch' => 'Flashlight ${p['on'] == true ? 'on' : 'off'}.',
       'camera' => 'Camera is ready, $a.',
-      'panel' => p['on'] == null
-          ? 'Here are the ${kind == 'wifi' ? 'Wi-Fi' : kind} settings.'
-          : 'Android doesn\'t let apps switch ${kind == 'wifi' ? 'Wi-Fi' : kind} ${p['on'] == true ? 'on' : 'off'} directly, $a, so I\'ve opened the panel — one tap there.',
+      'panel' => (r['line'] as String?) ??
+          (p['on'] == null
+              ? 'Here are the ${_kindLabel(kind)} settings.'
+              : 'I\'ve opened the ${_kindLabel(kind)} controls, $a — one tap there. (Turn on the LEO accessibility service and I can switch it myself.)'),
       _ => 'Done.',
     };
     await _say(line, kind: 'command');
@@ -1811,6 +2021,13 @@ class JarvisOrchestrator extends ChangeNotifier {
       case AiAnswer(:final text):
         await _say(text, route: 'ai', kind: 'conversation');
         return 'Answered';
+      case AiOperatePhone(:final goal):
+        tr.addStep(TaskStep(id: 'handoff', description: 'Hand off to the screen agent: $goal'));
+        tr.updateStep('handoff', status: StepStatus.done);
+        tr.setState(AgentState.completed, result: 'Handed off');
+        _tracker = null;
+        _startTask(_titleFrom(goal), 'agent', TaskRoute.ai, {'goal': goal});
+        return null;
       case AiClarify(:final question):
         await _say(question, route: 'ai', kind: 'question');
         return 'Asked for clarification';

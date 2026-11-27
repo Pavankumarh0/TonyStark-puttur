@@ -1,4 +1,4 @@
 <resources>
     <string name="accessibility_label">LEO device control</string>
-    <string name="accessibility_description">Lets LEO operate WhatsApp for you (open a chat, type a message, tap Send) ONLY after you approve the exact recipient and message in the LEO app. It only reads WhatsApp, WhatsApp Business and YouTube windows (YouTube: to tap the video you asked to play).</string>
+    <string name="accessibility_description">Lets LEO operate your phone by voice: open apps, tap, type, scroll and switch settings for the tasks you ask. Sending, deleting, paying or posting always waits for your approval. LEO never types passwords and refuses banking and payment apps. When LEO plans an unfamiliar task, a text summary of the current screen (never passwords or images) is sent to Gemini.</string>
 </resources>

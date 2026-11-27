@@ -41,6 +41,11 @@ class AiDraft extends AiProposal {
   const AiDraft(this.kind, this.subject, this.content);
 }
 
+class AiOperatePhone extends AiProposal {
+  final String goal;
+  const AiOperatePhone(this.goal);
+}
+
 class AiClarify extends AiProposal {
   final String question;
   const AiClarify(this.question);
@@ -149,6 +154,38 @@ class AiService {
     return ((j?['content'] as String?) ?? r.text).trim();
   }
 
+  /// Screen agent: given the goal, recent steps and the current screen (numbered elements), choose ONE
+  /// next action. The local executor validates it, asks the user before anything sensitive, and runs it.
+  Future<Map<String, dynamic>> agentStep({
+    required String goal,
+    required String screen,
+    required String? package,
+    required List<String> history,
+    required List<String> apps,
+  }) async {
+    final r = await _call(
+      'phone_agent',
+      'You operate an Android phone for the user, one action at a time, using the numbered screen elements. '
+          'Return ONLY JSON: {"thought": short reason, "action": {"type": "tap|long_press|type|submit|scroll|back|home|open_app|wait|notifications", '
+          '"index": element number or null, "text": text to type or null, "dir": "up|down|left|right" or null, "app": app name for open_app or null}, '
+          '"sensitive": true if this action sends, deletes, pays, buys, posts, submits, shares, books, uninstalls or is otherwise irreversible, '
+          '"describe": one short sentence telling the user what this action does (e.g. "Tap Send to email Rahul"), '
+          '"done": true when the goal is fully achieved (then action may be null), "summary": what was achieved (only when done), '
+          '"ask": a question for the user if you need information (else null)}. '
+          'Rules: prefer open_app to reach an app; after typing in a search box use submit; never type passwords; '
+          'if a login, payment or captcha blocks you, set ask to explain. Do not repeat a failed action more than twice. '
+          'Report only what the screen shows — never claim success you cannot see.',
+      'Goal: $goal\n'
+          'Installed apps (some): ${apps.take(60).join(', ')}\n'
+          'Steps so far:\n${history.isEmpty ? '(none)' : history.join('\n')}\n'
+          'Current app: ${package ?? 'unknown'}\nScreen:\n$screen',
+      maxTokens: 300,
+      temperature: 0.2,
+      json: true,
+    );
+    return _parseJson(r.text) ?? const {'done': false, 'ask': 'I could not decide the next step.'};
+  }
+
   /// Fallback understanding when the local intent engine cannot parse the request.
   Future<AiProposal> route(String utterance, String context, List<String> installedAppsSample) async {
     final r = await _call(
@@ -159,6 +196,7 @@ class AiService {
           '{"kind":"send_message","app":"whatsapp"|"whatsapp_business","recipient":string,"is_group":bool,"message":string} — user wants to send a WhatsApp message; message is the exact text to send, in first person\n'
           '{"kind":"write","draft_type":"email"|"message"|"document","subject":string|null,"content":string} — user wants something written for review\n'
           '{"kind":"clarify","question":string} — the request is ambiguous; ask one short question\n'
+          '{"kind":"operate_phone","goal":string} — the user wants something DONE on the phone that needs operating apps (tapping/typing), e.g. delete an email, find a photo, change a setting\n'
           'Use "whatsapp_business" only if the user explicitly says business.',
       '${context.isEmpty ? '' : '$context\n\n'}Some installed apps: ${installedAppsSample.take(40).join(', ')}\n\nUser request: $utterance',
       maxTokens: 600,
@@ -192,6 +230,9 @@ class AiService {
           };
           return AiDraft(kind, (j['subject'] as String?)?.trim(), content);
         }
+      case 'operate_phone':
+        final g = (j['goal'] as String?)?.trim();
+        if (g != null && g.isNotEmpty) return AiOperatePhone(g);
       case 'clarify':
         final q = (j['question'] as String?)?.trim();
         if (q != null && q.isNotEmpty) return AiClarify(q);

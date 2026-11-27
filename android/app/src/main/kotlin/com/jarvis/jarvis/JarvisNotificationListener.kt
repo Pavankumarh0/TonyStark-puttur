@@ -25,6 +25,37 @@ class JarvisNotificationListener : NotificationListenerService() {
             "com.yahoo.mobile.client.android.mail", "ch.protonmail.android",
         )
 
+        /** Chats that currently offer a notification "Reply" box, matching [who] (case-insensitive). */
+        fun replyTargets(who: String): List<Map<String, Any?>> {
+            val svc = instance ?: return emptyList()
+            val q = who.trim().lowercase()
+            return svc.activeNotifications.orEmpty().mapNotNull { sbn ->
+                val ex = sbn.notification.extras
+                val title = (ex.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE) ?: ex.getCharSequence(Notification.EXTRA_TITLE))?.toString()
+                    ?: return@mapNotNull null
+                val hasReply = sbn.notification.actions?.any { a -> a.remoteInputs?.isNotEmpty() == true } == true
+                if (!hasReply || !title.lowercase().contains(q)) return@mapNotNull null
+                mapOf("key" to sbn.key, "title" to title, "package" to sbn.packageName)
+            }.distinctBy { it["title"] to it["package"] }
+        }
+
+        /** Sends [text] through the notification's own Reply action (no app UI needed). */
+        fun reply(ctx: android.content.Context, key: String, text: String): Map<String, Any?> {
+            val svc = instance ?: return mapOf("ok" to false, "reason" to "Notification access is off")
+            val sbn = svc.activeNotifications.orEmpty().firstOrNull { it.key == key }
+                ?: return mapOf("ok" to false, "reason" to "That notification is gone (it may have been opened or cleared)")
+            val action = sbn.notification.actions?.firstOrNull { a -> a.remoteInputs?.isNotEmpty() == true }
+                ?: return mapOf("ok" to false, "reason" to "This chat has no reply box in its notification")
+            val intent = android.content.Intent()
+            val bundle = android.os.Bundle()
+            for (ri in action.remoteInputs) bundle.putCharSequence(ri.resultKey, text)
+            android.app.RemoteInput.addResultsToIntent(action.remoteInputs, intent, bundle)
+            return try {
+                action.actionIntent.send(ctx, 0, intent)
+                mapOf("ok" to true, "app" to sbn.packageName)
+            } catch (e: Exception) { mapOf("ok" to false, "reason" to (e.message ?: "The app rejected the reply")) }
+        }
+
         /** Active notifications for [packages]: one map per conversation / email. */
         fun read(packages: Set<String>): List<Map<String, Any?>> {
             val svc = instance ?: return emptyList()

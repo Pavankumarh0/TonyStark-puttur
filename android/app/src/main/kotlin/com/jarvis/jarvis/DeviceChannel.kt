@@ -157,6 +157,17 @@ object DeviceChannel {
                 }
             }
             "nowPlaying" -> background(result) { MediaBridge.nowPlaying(app) }
+            // ---------------- generic screen control
+            "screenDump" -> background(result) { ScreenAgent.dump() }
+            "screenAct" -> background(result) {
+                ScreenAgent.act(app, call.argument<String>("type") ?: "", call.argument<Int>("index"),
+                    call.argument<String>("text"), call.argument<String>("dir"), call.argument<String>("package"))
+            }
+            "isBlockedApp" -> result.success(ScreenAgent.isBlocked(call.argument<String>("package")))
+            "quickToggle" -> background(result) { QuickToggles.set(call.argument<String>("kind") ?: "", call.argument<Boolean>("on") == true) }
+            // ---------------- notification replies
+            "replyTargets" -> result.success(JarvisNotificationListener.replyTargets(call.argument<String>("who") ?: ""))
+            "notificationReply" -> result.success(JarvisNotificationListener.reply(app, call.argument<String>("key")!!, call.argument<String>("text")!!))
             // ---------------- everyday phone actions (no AI)
             "setAlarm" -> result.success(PhoneActions.setAlarm(app, call.argument("hour")!!, call.argument("minute")!!,
                 call.argument("message"), call.argument("dayOfWeek")))
