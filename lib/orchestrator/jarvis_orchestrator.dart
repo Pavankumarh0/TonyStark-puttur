@@ -433,8 +433,9 @@ class JarvisOrchestrator extends ChangeNotifier {
     // Rules didn't match → try the on-device trained model before ever considering AI.
     // A step planned by the brain that no built-in command covers ("start the stopwatch") is done on
     // screen by the agent — never silently dropped.
-    if (source == 'sarvam' && (intent is UnknownIntent || intent is KnowledgeIntent) && _freeTextWait == null && _choiceWait == null && _approvalWait == null) {
-      intent = PhoneTaskIntent(_currentUtterance);
+    if (source == 'sarvam' && _freeTextWait == null && _choiceWait == null && _approvalWait == null) {
+      final notAnApp = intent is OpenAppIntent && (await apps.resolve(intent.appName)).isEmpty; // "start the stopwatch"
+      if (intent is UnknownIntent || intent is KnowledgeIntent || notAnApp) intent = PhoneTaskIntent(_currentUtterance);
     }
     if (intent is UnknownIntent && _freeTextWait == null && _choiceWait == null && _approvalWait == null) {
       // Several steps / mixed language / long → let the brain plan it; the small on-device
