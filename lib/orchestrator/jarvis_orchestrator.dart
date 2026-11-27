@@ -11,6 +11,7 @@ import '../core/intent/local_classifier.dart';
 import '../core/intent/local_intent.dart';
 import '../core/intent/local_intent_engine.dart';
 import '../core/task/task_models.dart';
+import '../core/time_parser.dart';
 import '../core/task/task_runner.dart';
 import '../data/context_builder.dart';
 import '../data/memory_repository.dart';
@@ -471,6 +472,34 @@ class JarvisOrchestrator extends ChangeNotifier {
         _startTask('Open $appName', 'open_app', TaskRoute.local, {'query': appName});
       case PlayMediaIntent(:final query, :final app):
         _startTask('Play "$query"', 'play_media', TaskRoute.local, {'query': query, 'app': app.name});
+      case SetAlarmIntent():
+        _startTask(intent.label == null ? 'Set alarm' : 'Reminder: ${intent.label}', 'set_alarm', TaskRoute.local,
+            {'text': intent.text, 'label': intent.label});
+      case SetTimerIntent(:final length, :final label):
+        _startTask('Timer ${TimeParser.spokenDuration(length)}', 'phone_action', TaskRoute.local,
+            {'action': 'timer', 'seconds': length.inSeconds, 'label': label});
+      case ScheduleMeetingIntent():
+        _startTask(intent.title ?? (intent.googleMeet ? 'Google Meet meeting' : 'Calendar event'), 'schedule', TaskRoute.local, {
+          'text': intent.text,
+          'title': intent.title,
+          'attendees': intent.attendees,
+          'meet': intent.googleMeet,
+          'minutes': intent.length?.inMinutes,
+        });
+      case StartMeetIntent():
+        _startTask('Start a Google Meet', 'phone_action', TaskRoute.local, {'action': 'start_meet'});
+      case NavigateIntent(:final place):
+        _startTask('Navigate to $place', 'phone_action', TaskRoute.local, {'action': 'navigate', 'place': place});
+      case WebSearchIntent(:final query):
+        _startTask('Search: $query', 'phone_action', TaskRoute.local, {'action': 'search', 'query': query});
+      case FlashlightIntent(:final on):
+        _startTask('Flashlight ${on ? 'on' : 'off'}', 'phone_action', TaskRoute.local, {'action': 'torch', 'on': on});
+      case CameraIntent(:final selfie, :final video):
+        _startTask(video ? 'Record video' : (selfie ? 'Take a selfie' : 'Take a photo'), 'phone_action', TaskRoute.local,
+            {'action': 'camera', 'selfie': selfie, 'video': video});
+      case SettingsPanelIntent(:final kind, :final on):
+        _startTask('Open ${kind == 'wifi' ? 'Wi-Fi' : kind} controls', 'phone_action', TaskRoute.local,
+            {'action': 'panel', 'kind': kind, 'on': on});
       case SignInIntent(:final appName):
         _startTask('Sign in to $appName', 'sign_in', TaskRoute.local, {'query': appName});
       case CallIntent(:final name):
@@ -510,7 +539,9 @@ class JarvisOrchestrator extends ChangeNotifier {
         StatusIntent() || ContinueWhereStoppedIntent() || StopListeningIntent() => 'control',
         ApproveIntent() || RejectIntent() || EditMessageIntent() || ChooseOptionIntent() => 'answer',
         OpenAppIntent() || SendMessageIntent() || PlayMediaIntent() || CallIntent() || CheckMessagesIntent() ||
-        MediaControlIntent() => 'command',
+        MediaControlIntent() || SetAlarmIntent() || SetTimerIntent() || ScheduleMeetingIntent() || StartMeetIntent() ||
+        NavigateIntent() || WebSearchIntent() || FlashlightIntent() || CameraIntent() || SettingsPanelIntent() ||
+        SignInIntent() => 'command',
         KnowledgeIntent() => 'knowledge',
         WriteIntent() => 'write',
         RememberIntent() => 'remember',
@@ -875,6 +906,9 @@ class JarvisOrchestrator extends ChangeNotifier {
     'call': _runCall,
     'check_messages': _runCheckMessages,
     'sign_in': _runSignIn,
+    'set_alarm': _runSetAlarm,
+    'schedule': _runSchedule,
+    'phone_action': _runPhoneAction,
   };
 
   static const _kindToLabel = {
@@ -1087,6 +1121,150 @@ class JarvisOrchestrator extends ChangeNotifier {
             : '$reason. ${settings.address}, please tap play.',
         kind: 'command');
     return 'Results opened (not auto-played)';
+  }
+
+  // ---- runner: alarm / reminder (local)
+  Future<String?> _runSetAlarm(TaskTracker tr) async {
+    final a = settings.address;
+    final label = tr.snapshot.params['label'] as String?;
+    var when = TimeParser.when(tr.snapshot.params['text'] as String);
+    tr.addStep(const TaskStep(id: 'time', description: 'Understand the time'));
+    tr.addStep(const TaskStep(id: 'set', description: 'Set it in the Clock app'));
+    if (when == null || !when.hadTime) {
+      final said = await _askFreeText(tr, 'For what time, $a?');
+      when = TimeParser.when(said);
+      if (when == null) throw Exception('I couldn\'t understand that time.');
+    }
+    final at = when.at;
+    tr.updateStep('time', status: StepStatus.done, detail: TimeParser.spoken(at));
+    if (at.difference(DateTime.now()) > const Duration(hours: 24)) {
+      // Clock alarms only ring within the next 24 h; further out, use a calendar entry with a reminder.
+      tr.updateStep('set', description: 'Add a calendar reminder', status: StepStatus.running);
+      final r = await device.insertEvent(label ?? 'Reminder', at, at.add(const Duration(minutes: 15)));
+      if (r['ok'] != true) throw Exception(r['reason'] ?? 'Calendar could not open');
+      tr.updateStep('set', status: StepStatus.done, detail: 'Calendar opened — tap Save');
+      await _say('That\'s more than a day away, so I\'ve filled in a calendar reminder for ${TimeParser.spoken(at)}, $a. Tap Save to keep it.', kind: 'command');
+      return 'Calendar reminder prepared';
+    }
+    tr.updateStep('set', status: StepStatus.running);
+    final r = await device.setAlarm(at.hour, at.minute, message: label);
+    if (r['ok'] != true) throw Exception(r['reason'] ?? 'The Clock app refused');
+    tr.updateStep('set', status: StepStatus.done, detail: 'Clock app accepted');
+    await _say(label == null
+        ? 'Alarm set for ${TimeParser.spoken(at)}, $a.'
+        : 'I\'ll remind you to ${label[0].toLowerCase()}${label.substring(1)} at ${TimeParser.spoken(at)}, $a.', kind: 'command');
+    return 'Alarm ${TimeParser.spoken(at)}';
+  }
+
+  // ---- runner: schedule a meeting (local). The user taps Save in the calendar = approval.
+  Future<String?> _runSchedule(TaskTracker tr) async {
+    final a = settings.address;
+    final p = tr.snapshot.params;
+    final meet = p['meet'] == true;
+    final names = ((p['attendees'] as List?) ?? const []).cast<String>();
+    tr.addStep(const TaskStep(id: 'time', description: 'Understand date & time'));
+    if (names.isNotEmpty) tr.addStep(TaskStep(id: 'guests', description: 'Find email for ${names.join(', ')}'));
+    tr.addStep(TaskStep(id: 'open', description: meet ? 'Fill the event in Google Calendar with a Meet link' : 'Fill the event in Calendar'));
+
+    var when = TimeParser.when(p['text'] as String, preferPm: true);
+    if (when == null || !when.hadTime) {
+      final said = await _askFreeText(tr, 'What day and time should I schedule it for, $a?');
+      when = TimeParser.when('${when?.hadDay == true ? p['text'] : ''} $said', preferPm: true);
+      if (when == null) throw Exception('I couldn\'t understand that time.');
+    }
+    final start = when.at;
+    final end = start.add(Duration(minutes: (p['minutes'] as int?) ?? 30));
+    tr.updateStep('time', status: StepStatus.done, detail: TimeParser.spoken(start));
+
+    final emails = <String>[];
+    final missing = <String>[];
+    if (names.isNotEmpty) {
+      tr.updateStep('guests', status: StepStatus.running);
+      var st = await Permission.contacts.status;
+      if (!st.isGranted) st = await Permission.contacts.request();
+      for (final n in names) {
+        final found = st.isGranted ? await device.contactEmails(n) : const <Map<String, String>>[];
+        if (found.isEmpty) {
+          missing.add(n);
+        } else if (found.length == 1) {
+          emails.add(found.first['email']!);
+        } else {
+          final i = await _askChoice('Which email should I invite for $n?',
+              [for (final f in found) f['email']!], details: [for (final f in found) f['name']!], tr: tr);
+          emails.add(found[i]['email']!);
+        }
+      }
+      tr.updateStep('guests', status: StepStatus.done,
+          detail: [if (emails.isNotEmpty) emails.join(', '), if (missing.isNotEmpty) 'no email saved for ${missing.join(', ')}'].join(' · '));
+    }
+
+    final title = (p['title'] as String?) ?? (meet ? 'Google Meet' : 'Meeting');
+    tr.updateStep('open', status: StepStatus.running);
+    Map<String, dynamic> r;
+    if (meet) {
+      String utc(DateTime d) {
+        final u = d.toUtc();
+        String two(int v) => v.toString().padLeft(2, '0');
+        return '${u.year}${two(u.month)}${two(u.day)}T${two(u.hour)}${two(u.minute)}00Z';
+      }
+      final url = Uri.https('calendar.google.com', '/calendar/render', {
+        'action': 'TEMPLATE',
+        'text': title,
+        'dates': '${utc(start)}/${utc(end)}',
+        'vcon': 'meet', // Google Calendar attaches a Meet link
+        if (emails.isNotEmpty) 'add': emails.join(','),
+        'details': 'Scheduled by LEO',
+      }).toString();
+      r = await device.openUrl(url);
+    } else {
+      r = await device.insertEvent(title, start, end, emails: emails);
+    }
+    if (r['ok'] != true) throw Exception(r['reason'] ?? 'The calendar could not open');
+    tr.updateStep('open', status: StepStatus.done, detail: 'Waiting for you to tap Save');
+    final who = emails.isEmpty ? '' : ' with ${names.where((n) => !missing.contains(n)).join(' and ')} invited';
+    final miss = missing.isEmpty ? '' : ' I don\'t have an email saved for ${missing.join(' and ')}, so add them in Guests.';
+    await _say('I\'ve filled in "$title" for ${TimeParser.spoken(start)}${meet ? ' with a Google Meet link' : ''}$who.$miss '
+        'Please check it and tap Save, $a — nothing is sent until you do.', kind: 'command');
+    return 'Event prepared (user saves)';
+  }
+
+  // ---- runner: simple phone actions (local)
+  Future<String?> _runPhoneAction(TaskTracker tr) async {
+    final a = settings.address;
+    final p = tr.snapshot.params;
+    tr.addStep(TaskStep(id: 'do', description: tr.snapshot.title));
+    tr.updateStep('do', status: StepStatus.running);
+    final action = p['action'] as String;
+    final r = switch (action) {
+      'timer' => await device.setTimer(p['seconds'] as int, message: p['label'] as String?),
+      'start_meet' => await device.openUrl('https://meet.google.com/new'),
+      'navigate' => await device.navigate(p['place'] as String),
+      'search' => await device.webSearch(p['query'] as String),
+      'torch' => await device.torch(p['on'] == true),
+      'camera' => await device.camera(selfie: p['selfie'] == true, video: p['video'] == true),
+      'panel' => await device.panel(p['kind'] as String),
+      _ => const <String, dynamic>{'ok': false, 'reason': 'Unsupported action'},
+    };
+    if (r['ok'] != true) {
+      tr.updateStep('do', status: StepStatus.failed, detail: r['reason'] as String?);
+      throw Exception(r['reason'] ?? 'That didn\'t work');
+    }
+    tr.updateStep('do', status: StepStatus.done);
+    final kind = p['kind'] as String?;
+    final line = switch (action) {
+      'timer' => 'Timer set for ${TimeParser.spokenDuration(Duration(seconds: p['seconds'] as int))}, $a.',
+      'start_meet' => 'Starting a new Google Meet, $a.',
+      'navigate' => 'Starting navigation to ${p['place']}, $a.',
+      'search' => 'Here are the results for ${p['query']}.',
+      'torch' => 'Flashlight ${p['on'] == true ? 'on' : 'off'}.',
+      'camera' => 'Camera is ready, $a.',
+      'panel' => p['on'] == null
+          ? 'Here are the ${kind == 'wifi' ? 'Wi-Fi' : kind} settings.'
+          : 'Android doesn\'t let apps switch ${kind == 'wifi' ? 'Wi-Fi' : kind} ${p['on'] == true ? 'on' : 'off'} directly, $a, so I\'ve opened the panel — one tap there.',
+      _ => 'Done.',
+    };
+    await _say(line, kind: 'command');
+    return 'Done';
   }
 
   // ---- sign-in help: every step happens only after the user's answer. No passwords, no auto-OTP.

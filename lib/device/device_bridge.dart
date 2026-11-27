@@ -143,6 +143,29 @@ class DeviceBridge {
   /// While listening, pause other audio (transient focus) like Gemini/Assistant; it resumes after.
   Future<void> listenFocus(bool on) => _ch.invokeMethod('listenFocus', {'on': on});
 
+  // ---- everyday phone actions (local, no AI). Each returns {ok, reason?}.
+  Future<Map<String, dynamic>> _act(String m, [Map<String, dynamic>? a]) async =>
+      await _ch.invokeMapMethod<String, dynamic>(m, a) ?? const {'ok': false};
+  Future<Map<String, dynamic>> setAlarm(int hour, int minute, {String? message}) =>
+      _act('setAlarm', {'hour': hour, 'minute': minute, 'message': message});
+  Future<Map<String, dynamic>> setTimer(int seconds, {String? message}) =>
+      _act('setTimer', {'seconds': seconds, 'message': message});
+  Future<Map<String, dynamic>> insertEvent(String title, DateTime begin, DateTime end, {String? description, List<String> emails = const []}) =>
+      _act('insertEvent', {
+        'title': title, 'begin': begin.millisecondsSinceEpoch, 'end': end.millisecondsSinceEpoch,
+        'description': description, 'emails': emails,
+      });
+  Future<Map<String, dynamic>> openUrl(String url, {String? package}) => _act('openUrl', {'url': url, 'package': package});
+  Future<Map<String, dynamic>> navigate(String place) => _act('navigate', {'place': place});
+  Future<Map<String, dynamic>> webSearch(String query) => _act('webSearch', {'query': query});
+  Future<Map<String, dynamic>> torch(bool on) => _act('torch', {'on': on});
+  Future<Map<String, dynamic>> camera({bool selfie = false, bool video = false}) => _act('camera', {'selfie': selfie, 'video': video});
+  Future<Map<String, dynamic>> panel(String kind) => _act('panel', {'kind': kind});
+  Future<List<Map<String, String>>> contactEmails(String name) async {
+    final l = await _ch.invokeListMethod<Map>('contactEmails', {'name': name}) ?? [];
+    return [for (final m in l) {'name': m['name'] as String, 'email': m['email'] as String}];
+  }
+
   // ---- sign-in help (LEO only acts on the user's answers; never types passwords)
   Future<Map<String, dynamic>> loginScan(String pkg) async =>
       await _ch.invokeMapMethod<String, dynamic>('loginScan', {'package': pkg}) ?? const {'needsLogin': false};

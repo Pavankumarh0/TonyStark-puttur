@@ -10,6 +10,12 @@ class AppResolver {
     'whatsapp business': ['com.whatsapp.w4b'],
     'business whatsapp': ['com.whatsapp.w4b'],
     'youtube': ['com.google.android.youtube'],
+    'youtube music': ['com.google.android.apps.youtube.music'],
+    'yt music': ['com.google.android.apps.youtube.music'],
+    'google meet': ['com.google.android.apps.tachyon'],
+    'gmeet': ['com.google.android.apps.tachyon'],
+    'reminder': ['com.samsung.android.app.reminder'],
+    'reminders': ['com.samsung.android.app.reminder'],
     'gmail': ['com.google.android.gm'],
     'mail': ['com.google.android.gm', 'com.samsung.android.email.provider'],
     'email': ['com.google.android.gm', 'com.samsung.android.email.provider'],
@@ -86,6 +92,10 @@ class AppResolver {
     if (starts.isNotEmpty) return starts;
     final contains = installed.where((a) => _n(a.label).contains(q)).toList();
     if (contains.isNotEmpty) return contains;
+    // Labels differ from what people say ("YT Music"): match every spoken word in the package name.
+    final words = q.split(' ').where((w) => w.length > 1).toList();
+    final byPackage = installed.where((a) => words.every((w) => a.packageName.toLowerCase().contains(w))).toList();
+    if (byPackage.isNotEmpty) return byPackage;
 
     final scored = <(InstalledApp, double)>[];
     for (final a in installed) {

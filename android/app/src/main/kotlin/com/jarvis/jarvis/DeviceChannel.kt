@@ -157,6 +157,20 @@ object DeviceChannel {
                 }
             }
             "nowPlaying" -> background(result) { MediaBridge.nowPlaying(app) }
+            // ---------------- everyday phone actions (no AI)
+            "setAlarm" -> result.success(PhoneActions.setAlarm(app, call.argument("hour")!!, call.argument("minute")!!,
+                call.argument("message"), call.argument("dayOfWeek")))
+            "setTimer" -> result.success(PhoneActions.setTimer(app, call.argument("seconds")!!, call.argument("message")))
+            "insertEvent" -> result.success(PhoneActions.insertEvent(app, call.argument("title")!!,
+                (call.argument<Number>("begin")!!).toLong(), (call.argument<Number>("end")!!).toLong(),
+                call.argument("description"), call.argument<List<String>>("emails") ?: emptyList()))
+            "openUrl" -> result.success(PhoneActions.openUrl(app, call.argument("url")!!, call.argument("package")))
+            "navigate" -> result.success(PhoneActions.navigate(app, call.argument("place")!!))
+            "webSearch" -> result.success(PhoneActions.webSearch(app, call.argument("query")!!))
+            "torch" -> result.success(PhoneActions.torch(app, call.argument<Boolean>("on") == true))
+            "camera" -> result.success(PhoneActions.camera(app, call.argument<Boolean>("selfie") == true, call.argument<Boolean>("video") == true))
+            "panel" -> result.success(PhoneActions.panel(app, call.argument("kind") ?: "settings"))
+            "contactEmails" -> background(result) { PhoneActions.contactEmails(app, call.argument("name") ?: "") }
             // ---------------- sign-in help (each step only after the user's answer)
             "loginScan" -> background(result) { LoginAutomator.scan(call.argument("package")!!) }
             "loginChoose" -> background(result) { LoginAutomator.choose(call.argument("package")!!, call.argument("method")!!) }

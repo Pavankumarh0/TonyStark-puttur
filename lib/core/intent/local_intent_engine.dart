@@ -1,3 +1,4 @@
+import '../time_parser.dart';
 import 'local_intent.dart';
 
 /// What the conversation is currently waiting for. Changes how short answers ("yes", "the
@@ -74,7 +75,8 @@ class LocalIntentEngine {
       if (c != null) return c;
     }
 
-    return _checkMessages(n) ??
+    return _phoneActions(text, n) ??
+        _checkMessages(n) ??
         _media(text, n) ??
         _call(text, n) ??
         _messaging(text, n) ??
@@ -190,6 +192,96 @@ class LocalIntentEngine {
     }
     if (n == 'last one' || n == 'the last one') return ChooseOptionIntent(count - 1);
     return null;
+  }
+
+  // ---------------------------------------------------------------- phone actions (local)
+  LocalIntent? _phoneActions(String text, String n) {
+    // Timer
+    if (RegExp(r"^(set|start|put|create)( a| an| the)? timer\b|^timer for\b|^countdown( for)?\b").hasMatch(n)) {
+      final d = TimeParser.duration(n);
+      if (d != null) {
+        final label = RegExp(r"\bfor (?:the )?([a-z ]+?)$").firstMatch(n.replaceAll(RegExp(r"\b\d+\s*(hours?|minutes?|mins?|seconds?|secs?)\b"), '').trim());
+        return SetTimerIntent(d, label: label?.group(1)?.trim().isEmpty == true ? null : label?.group(1)?.trim());
+      }
+    }
+    // Reminder → labelled alarm
+    final rem = RegExp(r"^(?:remind me|set a reminder|reminder)(?: to| about| that)?\s+(.+?)\s+(?:at|in|on|tomorrow|tonight|today|by)\b", caseSensitive: false)
+        .firstMatch(text);
+    if (rem != null && TimeParser.when(text) != null) return SetAlarmIntent(text, label: _cap(rem.group(1)!));
+    // Alarm
+    if (RegExp(r"^(set|create|put|make|add)( an| a| my| the)? alarm\b|^wake me( up)?\b|^alarm (for|at)\b").hasMatch(n)) {
+      if (TimeParser.when(text) != null) {
+        final label = RegExp(r"\b(?:called|named|labelled|labeled|saying|for) ([a-z ]+)$").firstMatch(n);
+        final l = label?.group(1);
+        return SetAlarmIntent(text, label: l != null && !RegExp(r"\d|am|pm|tomorrow|today|morning|evening").hasMatch(l) ? _cap(l) : null);
+      }
+    }
+    // Start a meeting now
+    if (RegExp(r"^(start|create|begin|open|new|make)( a| an)?( new)? (google meet|gmeet|g meet|meet|video call|video meeting)( call| meeting)?( now)?$").hasMatch(n)) {
+      return const StartMeetIntent();
+    }
+    // Schedule a meeting / event
+    // "call" only counts as a meeting with scheduling verbs ("make a call to X" is a phone call).
+    final mt = RegExp(r"^(schedule|set up|setup|create|book|arrange|plan|fix|add|organi[sz]e)( a| an)?( new)?( google meet| gmeet| g meet| zoom| video| online| team| quick)? (meeting|meet|gmeet|google meet|g meet|call|event|appointment|session)\b").firstMatch(n);
+    if (mt != null || RegExp(r"^(add|put) (.+) (to|in|on) (my )?calendar").hasMatch(n)) {
+      final meet = RegExp(r"\b(google meet|gmeet|g meet|meet link|video call|video meeting|on meet|in meet)\b").hasMatch(n) ||
+          (mt?.group(4)?.contains('meet') ?? false) || (mt?.group(5)?.contains('meet') ?? false);
+      final withM = RegExp(r"\bwith (.+?)(?=\s+(?:tomorrow|today|tonight|at|on|about|regarding|for|from|next|this|in|titled|called)\b|[.?!]?$)", caseSensitive: false).firstMatch(text);
+      final attendees = <String>[];
+      if (withM != null) {
+        for (final a in withM.group(1)!.split(RegExp(r",| and "))) {
+          final name = a.trim().replaceAll(RegExp(r"\b(tomorrow|today|tonight|at|on|about|for|regarding|from|to|in)\b.*$", caseSensitive: false), '').trim();
+          if (name.isNotEmpty && !RegExp(r"^(google|meet|gmeet|my team|team)$", caseSensitive: false).hasMatch(name)) attendees.add(_cap(name));
+        }
+      }
+      final about = RegExp(r"\b(?:about|regarding|on the topic of|titled|called|for the) (.+?)(?=\s+(?:with|tomorrow|today|tonight|at|on|from|next|this)\b|$)", caseSensitive: false)
+          .firstMatch(text);
+      final title = about != null
+          ? _cap(about.group(1)!)
+          : (attendees.isNotEmpty ? 'Meeting with ${attendees.join(', ')}' : null);
+      final len = RegExp(r"\bfor (\d+|an?|half an?) ?(hours?|hrs?|minutes?|mins?)\b").firstMatch(n);
+      return ScheduleMeetingIntent(text,
+          title: title, attendees: attendees, googleMeet: meet, length: len == null ? null : TimeParser.duration(len.group(0)!));
+    }
+    // Navigation
+    final nav = RegExp(r"^(?:navigate|take me|drive me|directions|get directions|show me the way|route me)(?: to| me to)?\s+(.+)$", caseSensitive: false).firstMatch(text);
+    if (nav != null) return NavigateIntent(nav.group(1)!.replaceAll(RegExp(r'[.!?]+$'), '').trim());
+    // Web search
+    final ws = RegExp(r"^(?:search google|search the web|search online|search on google|google search|look up|search|google)(?: on google| on the web| online)?(?: for| about)?\s+(.+)$", caseSensitive: false).firstMatch(text);
+    if (ws != null && !RegExp(r"\byoutube\b", caseSensitive: false).hasMatch(text)) return WebSearchIntent(ws.group(1)!.trim());
+    // Flashlight
+    final fl = RegExp(r"^(?:turn|switch|put)\s+(on|off)\s+(?:the\s+)?(?:flashlight|torch|flash ?light|flash)$|^(?:turn|switch)\s+(?:the\s+)?(?:flashlight|torch|flash)\s+(on|off)$|^(?:flashlight|torch)\s+(on|off)$")
+        .firstMatch(n);
+    if (fl != null) return FlashlightIntent((fl.group(1) ?? fl.group(2) ?? fl.group(3)) == 'on');
+    // Camera
+    if (RegExp(r"^(take|click|capture)( a| me a)? (selfie|selfy)").hasMatch(n)) return const CameraIntent(selfie: true);
+    if (RegExp(r"^(take|click|capture)( a)? (photo|picture|pic|snap)").hasMatch(n)) return const CameraIntent();
+    if (RegExp(r"^(record|take|start)( a)? video").hasMatch(n)) return const CameraIntent(video: true);
+    // Connectivity / settings panels
+    final sp = RegExp(r"^(?:turn|switch|put)\s+(on|off)\s+(?:the\s+|my\s+)?(wi ?fi|wifi|bluetooth|mobile data|data|hotspot|nfc|location|gps|airplane mode|flight mode)$|^(?:turn|switch)\s+(?:the\s+|my\s+)?(wi ?fi|wifi|bluetooth|mobile data|data|hotspot|nfc|location|gps|airplane mode|flight mode)\s+(on|off)$|^(?:open\s+)?(wi ?fi|wifi|bluetooth|hotspot|location|display|brightness)\s+settings$")
+        .firstMatch(n);
+    if (sp != null) {
+      final raw = sp.group(2) ?? sp.group(3) ?? sp.group(5) ?? '';
+      final onOff = sp.group(1) ?? sp.group(4);
+      final kind = switch (raw.replaceAll(' ', '')) {
+        'wifi' => 'wifi',
+        'bluetooth' => 'bluetooth',
+        'mobiledata' || 'data' => 'data',
+        'hotspot' => 'hotspot',
+        'nfc' => 'nfc',
+        'location' || 'gps' => 'location',
+        'airplanemode' || 'flightmode' => 'airplane',
+        'display' || 'brightness' => 'display',
+        _ => 'settings',
+      };
+      return SettingsPanelIntent(kind, on: onOff == null ? null : onOff == 'on');
+    }
+    return null;
+  }
+
+  static String _cap(String s) {
+    final t = s.trim().replaceAll(RegExp(r'[.!?]+$'), '');
+    return t.isEmpty ? t : t[0].toUpperCase() + t.substring(1);
   }
 
   // ---------------------------------------------------------------- everyday tasks (local)
