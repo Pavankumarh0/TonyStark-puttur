@@ -2644,7 +2644,7 @@ class JarvisOrchestrator extends ChangeNotifier {
       }
     }
     tr.updateStep('read', detail: '${chats.length} chats, ${emails.length} emails');
-    await _say('${parts.join(' ')}${items.isEmpty ? '' : ' That\'s what\'s in your notifications, $a.'}', kind: 'command');
+    await _say('${parts.join(' ')}${items.isEmpty ? '' : ' That\'s what\'s in your notifications, $a.'}', kind: 'messages');
     return '${chats.length} chats, ${emails.length} emails';
   }
 
@@ -3061,7 +3061,8 @@ class JarvisOrchestrator extends ChangeNotifier {
     } catch (_) {}
     final recent = [
       for (final m in messages.length > 4 ? messages.sublist(messages.length - 4) : messages)
-        '${m.role == 'user' ? 'User' : 'LEO'}: ${m.text.length > 120 ? m.text.substring(0, 120) : m.text}'
+        '${m.role == 'user' ? 'User' : 'LEO'}: '
+            '${_privateKinds.contains(m.kind) ? '[private content hidden]' : (m.text.length > 120 ? m.text.substring(0, 120) : m.text)}'
     ];
     // Mask personal identifiers in ONE pass so the same value gets the same placeholder everywhere.
     const sep = '\n<<<NOW>>>\n';
@@ -3151,10 +3152,18 @@ class JarvisOrchestrator extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _say(String text, {bool store = true, String route = 'local', String? kind, String extraStoredText = ''}) async {
+  /// Kinds whose text quotes people's messages, chats or screen contents.
+  static const _privateKinds = {'screen', 'approval', 'reminder', 'messages', 'private'};
+
+  /// Private = quotes messages/chats/screen, or contains a phone number, OTP, email, ID…
+  static bool isPrivateSpeech(String text, String? kind) =>
+      _privateKinds.contains(kind) || PrivacyFilter.redact(text).secrets.keys.any((k) => !k.startsWith('<QUOTE'));
+
+  Future<void> _say(String text,
+      {bool store = true, String route = 'local', String? kind, String extraStoredText = '', bool private = false}) async {
     if (store) await _store('jarvis', '$text$extraStoredText', route: route, kind: kind);
     if (settings.speakResponses) {
-      await speechOut.speak(text);
+      await speechOut.speak(text, private: private || isPrivateSpeech(text, kind));
       if (speechOut.lastError != null && speechOut.lastEngine == 'device') {
         banner ??= speechOut.lastError;
       }

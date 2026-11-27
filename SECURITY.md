@@ -44,6 +44,23 @@ The user can clear it.
 
 **No screen contents for banking or payment apps.** Those apps are on a blocklist. LEO won't read or operate them, and doesn't even send their names.
 
+## 2a. A WhatsApp message, step by step ("Leo, send hi to Rahul on WhatsApp")
+
+| Step | Where it happens | Does the message text go anywhere? |
+|---|---|---|
+| Hearing "Leo" | Phone (sherpa-onnx) | No |
+| Turning your voice into text | Sarvam speech-to-text, over HTTPS | **Yes, your voice audio for this one request.** It is the only place the words travel. Nothing is stored by LEO outside the phone. |
+| Understanding "send … saying hi" | Phone rule engine | No. If a cloud model is needed, the body is masked as `<MESSAGE_1>` first. |
+| Finding Rahul in contacts | Phone | No |
+| "I've prepared: 'hi' for Rahul. Shall I send?" | **Phone's own voice** (private speech) | No |
+| Your "yes" | Phone; approval bound to this exact text and recipient | No |
+| Sending | **WhatsApp itself**, end-to-end encrypted. LEO only presses Send. | Only to Rahul, via WhatsApp's encryption |
+| Reading Rahul's reply aloud | Phone reads the notification; **phone's own voice** speaks it | No |
+
+LEO has **no server and no cloud database**. "Uses the internet" means three narrow, encrypted calls to named providers, each with a published retention policy. It never means publishing data on the web. Chats are never uploaded, synced or used to train anything.
+
+To remove even the voice step, the next improvement is on-device speech recognition (Android's offline recogniser), so dictated messages never leave the phone.
+
 ## 3. Safety of actions (human in the loop)
 
 - **Approval bound to the exact action.** Anything that reaches another person or moves money needs an explicit "yes": send, share, post, pay, buy, order, install, delete, call, video call, join, follow, sign out. The approval shows the exact message and recipient, and is fingerprinted, so an approval for one message can't be reused for a changed one.

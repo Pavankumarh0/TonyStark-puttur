@@ -39,14 +39,17 @@ class SpeechOutput extends ChangeNotifier {
   }
 
   /// Speaks [text]; completes when finished or when [stop] is called.
-  Future<void> speak(String text) async {
+  /// [private] text (messages, chats, OTPs, screen contents) is spoken with the phone's own voice only —
+  /// it is never sent to a cloud voice service.
+  Future<void> speak(String text, {bool private = false}) async {
     final clean = _speakable(text);
     if (clean.isEmpty) return;
     final gen = ++_generation;
     _set(true);
     try {
       final key = settings.secret(SecretKey.sarvam);
-      if (!settings.useDeviceTts && key != null && key.isNotEmpty) {
+      final keepLocal = private && settings.privateVoice;
+      if (!keepLocal && !settings.useDeviceTts && key != null && key.isNotEmpty) {
         try {
           await _speakSarvam(clean, key, gen);
           lastEngine = 'sarvam';

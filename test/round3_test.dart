@@ -236,4 +236,12 @@ void main() {
       test('$l is fine', () => expect(JarvisOrchestrator.isSensitiveLabel(l), isFalse));
     }
   });
+
+  group('Private speech stays on the phone', () {
+    test('chat read-out', () => expect(JarvisOrchestrator.isPrivateSpeech('Latest in your chat with Rahul: see you', 'screen'), isTrue));
+    test('send approval', () => expect(JarvisOrchestrator.isPrivateSpeech('I\'ve prepared this message for Rahul: "hi". Shall I send it?', 'approval'), isTrue));
+    test('OTP', () => expect(JarvisOrchestrator.isPrivateSpeech('I see the code 482913 in your messages.', 'question'), isTrue));
+    test('ordinary reply uses the normal voice', () => expect(JarvisOrchestrator.isPrivateSpeech('It\'s 7:35 PM, sir.', 'info'), isFalse));
+    test('tapped "Save" is not private', () => expect(JarvisOrchestrator.isPrivateSpeech('Tapped "Save", sir.', 'command'), isFalse));
+  });
 }

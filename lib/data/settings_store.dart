@@ -114,6 +114,10 @@ class SettingsStore extends ChangeNotifier {
   String get openAiModel => _prefs.getString('openai_model') ?? 'gpt-4o-mini';
   set openAiModel(String v) => _set('openai_model', v.trim());
 
+  /// Speak private content (messages, chats, OTPs, what's on screen) with the on-device voice only.
+  bool get privateVoice => _prefs.getBool('private_voice') ?? true;
+  set privateVoice(bool v) => _setB('private_voice', v);
+
   /// Hide LEO's screens from screenshots, screen recording and the recent-apps preview.
   bool get secureScreen => _prefs.getBool('secure_screen') ?? false;
   set secureScreen(bool v) => _setB('secure_screen', v);

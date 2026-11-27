@@ -29,4 +29,18 @@ void main() {
     final r = PrivacyFilter.redact('call 9845012345 and text 9845012345');
     expect(r.count, 1);
   });
+
+  test('dictated message body never reaches the cloud', () {
+    final r = PrivacyFilter.redact('hey send a whatsapp message to Rahul saying happy birthday da, party at 8');
+    expect(r.text, 'hey send a whatsapp message to Rahul saying <MESSAGE_1>');
+    expect(r.restore('send a whatsapp message to Rahul saying <MESSAGE_1>'),
+        'send a whatsapp message to Rahul saying happy birthday da, party at 8');
+  });
+  test('tell him that …', () {
+    final r = PrivacyFilter.redact('message amma and tell her that I will be late');
+    expect(r.text, isNot(contains('I will be late')));
+    expect(r.restore(r.text), 'message amma and tell her that I will be late');
+  });
+  test('quoted chat text from LEO is hidden', () =>
+      expect(PrivacyFilter.redact('LEO: I\'ve prepared this message for Rahul: "see you at 5". Shall I send it?').text, isNot(contains('see you at 5'))));
 }

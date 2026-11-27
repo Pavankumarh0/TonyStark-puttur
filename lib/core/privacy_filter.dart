@@ -24,6 +24,10 @@ class Redaction {
 class PrivacyFilter {
   // Order matters: most specific first.
   static final _rules = <(String, RegExp)>[
+    // The body of a message being dictated: "… saying happy birthday da", "tell him that I'm late".
+    ('MESSAGE', RegExp(r'(?<=\b(?:saying|that says|which says|tell (?:him|her|them)(?: that)?|telling (?:him|her|them)(?: that)?|message:|text:)\s+).{2,500}$', caseSensitive: false)),
+    // Anything LEO quoted back ("I've prepared this message: \"…\"").
+    ('QUOTE', RegExp(r'"[^"]{2,300}"|“[^”]{2,300}”')),
     // Secrets spoken next to a keyword: "otp is 4829", "password abc@123", "pin 1234", "cvv 123"
     ('SECRET', RegExp(r'(?<=\b(?:password|passcode|pass code)\s*(?:is|:|=)\s*)[^\s,]{3,32}', caseSensitive: false)),
     ('OTP', RegExp(r'(?<=\b(?:pin|cvv|mpin|upi pin|otp|one time password|verification code|code)\s*(?:is|:|=)?\s*)\d{3,8}\b', caseSensitive: false)),

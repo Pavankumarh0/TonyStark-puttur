@@ -223,6 +223,14 @@ class SettingsScreen extends StatelessWidget {
           ),
         ),
         SwitchListTile(
+          value: s.privateVoice,
+          onChanged: (v) => s.privateVoice = v,
+          title: const Text('Read private things with the phone\'s own voice'),
+          subtitle: const Text(
+              'Messages, chats, OTPs and screen text are spoken on-device — never sent to a cloud voice.',
+              style: TextStyle(color: JColors.dim)),
+        ),
+        SwitchListTile(
           value: s.secureScreen,
           onChanged: (v) {
             s.secureScreen = v;
