@@ -57,8 +57,10 @@ object PhoneExtras {
             val mm = "%02d".format(minute ?: 0)
             val h12 = if (hour % 12 == 0) 12 else hour % 12
             val ap = if (hour >= 12) "p" else "a"
-            if (ampmKnown) Regex("""(^|\D)0?$h12[:.]$mm\s*$ap\.?\s*m\b|(^|\D)0?$hour[:.]$mm(?!\s*[ap]\.?\s*m)""", RegexOption.IGNORE_CASE)
-            else Regex("""(^|\D)0?$h12[:.]$mm\b|(^|\D)${(h12 + 12) % 24}[:.]$mm\b""", RegexOption.IGNORE_CASE)
+            // "6:30 am", "06:30", "18:30", and for whole hours also "7 am".
+            val hm = if (mm == "00") """0?$h12(?:[:.]00)?""" else """0?$h12[:.]$mm"""
+            if (ampmKnown) Regex("""(^|\D)$hm\s*$ap\.?\s*m\b|(^|\D)0?$hour[:.]$mm(?!\s*[ap]\.?\s*m)""", RegexOption.IGNORE_CASE)
+            else Regex("""(^|\D)$hm\s*[ap]\.?\s*m\b|(^|\D)0?$h12[:.]$mm\b|(^|\D)${(h12 % 12) + 12}[:.]$mm\b""", RegexOption.IGNORE_CASE)
         }
         // Wait for the clock list to be in front.
         var root: android.view.accessibility.AccessibilityNodeInfo? = null
@@ -70,9 +72,30 @@ object PhoneExtras {
         }
         if (root == null) return mapOf("ok" to false, "status" to "clock_not_shown")
         val pkg = root.packageName.toString()
+        val timeLike = Regex("""\d{1,2}(?:[:.]\d\d)?\s*[ap]\.?\s*m\b|\d{1,2}[:.]\d\d""", RegexOption.IGNORE_CASE)
+        val A = android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+        val F = android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+        // The list that holds the alarm switches (not the app bar / outer layout).
+        fun listScroller(r: android.view.accessibility.AccessibilityNodeInfo): android.view.accessibility.AccessibilityNodeInfo? {
+            var sw: android.view.accessibility.AccessibilityNodeInfo? = null
+            fun find(x: android.view.accessibility.AccessibilityNodeInfo) {
+                if (sw != null) return
+                if (x.isCheckable) { sw = x; return }
+                for (k in 0 until x.childCount) x.getChild(k)?.let { find(it) }
+            }
+            find(r)
+            val viaSwitch = sw?.let { generateSequence(it.parent) { p -> p.parent }.firstOrNull { p -> p.isScrollable } }
+            if (viaSwitch != null) return viaSwitch
+            return generateSequence(listOf(r)) { lvl -> lvl.flatMap { n -> (0 until n.childCount).mapNotNull { n.getChild(it) } }.ifEmpty { null } }
+                .flatten().take(400).filter { it.isScrollable }
+                .maxByOrNull { val b = android.graphics.Rect(); it.getBoundsInScreen(b); b.width().toLong() * b.height() }
+        }
+        // Start from the top of the list.
+        s.rootInActiveWindow?.let { r -> listScroller(r)?.let { l -> repeat(10) { if (!l.performAction(A)) return@let; Thread.sleep(150) } } }
+        Thread.sleep(300)
         fun label(n: android.view.accessibility.AccessibilityNodeInfo): String {
             val own = listOfNotNull(n.contentDescription?.toString(), n.text?.toString()).joinToString(" ")
-            if (own.contains(Regex("""\d[:.]\d\d"""))) return own
+            if (own.contains(timeLike)) return own
             // The switch's row: walk up and collect the row text.
             var p = n.parent
             repeat(3) {
@@ -85,7 +108,7 @@ object PhoneExtras {
                 }
                 walk(p!!, 0)
                 val t = sb.toString()
-                if (t.contains(Regex("""\d[:.]\d\d"""))) return t
+                if (t.contains(timeLike)) return t
                 p = p!!.parent
             }
             return own
@@ -102,7 +125,7 @@ object PhoneExtras {
             collect(r)
             for (sw in switches) {
                 val l = label(sw).trim()
-                val key = Regex("""\d{1,2}[:.]\d\d\s*([ap]\.?\s*m)?""", RegexOption.IGNORE_CASE).find(l)?.value ?: continue
+                val key = Regex("""\d{1,2}(?:[:.]\d\d)?\s*[ap]\.?\s*m\b|\d{1,2}[:.]\d\d""", RegexOption.IGNORE_CASE).find(l)?.value ?: continue
                 if (timeRx != null && !timeRx.containsMatchIn(l)) continue
                 if (!seen.add(l)) continue
                 if (!sw.isChecked) { alreadyOff.add(key); continue }
@@ -110,10 +133,10 @@ object PhoneExtras {
                 if (target?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK) == true) turnedOff.add(key)
             }
             if (timeRx != null && turnedOff.isNotEmpty()) break
-            val scroller = generateSequence(listOf(r)) { lvl -> lvl.flatMap { n -> (0 until n.childCount).mapNotNull { n.getChild(it) } }.ifEmpty { null } }
-                .flatten().take(400).firstOrNull { it.isScrollable }
-            if (scroller?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) != true) break
-            Thread.sleep(500)
+            val before = seen.size
+            if (listScroller(r)?.performAction(F) != true) break
+            Thread.sleep(600)
+            if (page > 0 && before == seen.size && switches.isEmpty()) break
         }
         Thread.sleep(400)
         return mapOf("ok" to true, "status" to "done", "turnedOff" to turnedOff, "alreadyOff" to alreadyOff.distinct().filter { it !in turnedOff })

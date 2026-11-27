@@ -58,17 +58,32 @@ object ScreenAgent {
         val root = targetRoot(s, skipOwn) ?: return mapOf("ok" to false, "reason" to "no_window")
         val pkg = root.packageName?.toString()
         if (isBlocked(pkg)) return mapOf("ok" to false, "reason" to "blocked_app", "package" to pkg)
-        val out = LinkedHashSet<String>()
-        val stack = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
-        while (stack.isNotEmpty() && out.size < max) {
-            val n = stack.removeFirst()
-            if (n.isVisibleToUser && !n.isPassword) {
-                val t = (n.text?.toString() ?: "").trim()
-                if (t.length > 1) out += t.take(300)
+        fun collect(r: AccessibilityNodeInfo): List<String> {
+            val out = LinkedHashSet<String>()
+            val stack = ArrayDeque<AccessibilityNodeInfo>().apply { add(r) }
+            var visited = 0
+            // Depth-first = reading order (a paragraph's pieces stay together).
+            while (stack.isNotEmpty() && out.size < max && visited < 5000) {
+                val n = stack.removeLast(); visited++
+                if (n.isVisibleToUser && !n.isPassword && !n.isEditable) {
+                    // Web pages often carry their text as a description instead of text.
+                    val t = (n.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+                        ?: n.contentDescription?.toString()?.trim().takeIf { n.childCount == 0 } ?: "").trim()
+                    val isUrlBar = n.viewIdResourceName?.contains("url", ignoreCase = true) == true ||
+                        n.viewIdResourceName?.contains("location_bar", ignoreCase = true) == true
+                    if (t.length > 1 && !isUrlBar) out += t.take(300)
+                }
+                for (i in n.childCount - 1 downTo 0) n.getChild(i)?.let { stack.addLast(it) }
             }
-            for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
+            return out.toList()
         }
-        return mapOf("ok" to true, "package" to pkg, "lines" to out.toList())
+        var lines = collect(root)
+        if (lines.size < 3) {
+            // Browsers build the page's accessibility tree lazily on first request — give it a moment.
+            Thread.sleep(700)
+            (targetRoot(s, skipOwn) ?: root).let { r -> r.refresh(); lines = collect(r) }
+        }
+        return mapOf("ok" to true, "package" to pkg, "lines" to lines)
     }
 
     fun dump(maxNodes: Int = 70, skipOwn: Boolean = false): Map<String, Any?> {

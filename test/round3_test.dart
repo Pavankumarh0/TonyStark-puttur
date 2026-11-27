@@ -121,6 +121,12 @@ void main() {
     test('go back', () => expect((e.parse('go back') as ScreenCommandIntent).command, ScreenCommand.back));
   });
 
+  group('Media control phrasing', () {
+    for (final s in ['I said pause the music in Spotify.', 'Pause the music in Spotify.', 'please stop the song on youtube', 'resume the music on spotify']) {
+      test(s, () => expect(e.parse(s), isA<MediaControlIntent>()));
+    }
+  });
+
   group('Natural phrasing', () {
     test('uh, can you … ? is still a phone task', () =>
         expect(e.parse('uh, can you open Instagram and send a reel to Pawan Kumar?'), isA<PhoneTaskIntent>()));

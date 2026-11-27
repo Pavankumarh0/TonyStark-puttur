@@ -168,6 +168,11 @@ class LocalIntentClassifier {
       case 'play_media':
         final q = _strip(text, _mediaFiller);
         if (q.isEmpty) return null;
+        // Never "play" a control word: "pause the music in Spotify" must not search for a song called "Pause".
+        if (RegExp(r'\b(pause|stop|resume|unpause|mute|skip|next|previous|volume|louder|quieter)\b', caseSensitive: false).hasMatch(text) &&
+            !RegExp(r'\b(song|track)\s+(called|named)\b', caseSensitive: false).hasMatch(text)) {
+          return null;
+        }
         final app = lower.contains('spotify')
             ? MediaApp.spotify
             : (lower.contains('youtube music') ? MediaApp.youtubeMusic : MediaApp.youtube);

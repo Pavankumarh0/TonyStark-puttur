@@ -78,6 +78,70 @@ class LocalAgentBrain {
     return (question: q.length > 220 ? '${q.substring(0, 220)}…' : q, buttons: buttons.take(4).toList());
   }
 
+  /// "send a reel to Pavan", "share this post with Rahul on instagram" → (what: reel, who: Pavan).
+  static ({String what, String who})? shareTarget(String goal) {
+    final m = RegExp(r"\b(?:send|share|forward)\s+(?:a|an|the|this|that|any|some|one)?\s*(?:random\s+|funny\s+|nice\s+)?(reel|post|video|photo|story)s?\s+(?:to|with)\s+(.+?)(?:\s+(?:on|in|via|using)\s+(?:instagram|insta|facebook))?(?:\s*\(.*\))?[.?!]*$",
+            caseSensitive: false)
+        .firstMatch(goal.trim());
+    if (m == null) return null;
+    return (what: m.group(1)!.toLowerCase(), who: m.group(2)!.trim());
+  }
+
+  Map<String, dynamic>? _shareStep(List<({int index, String kind, String label, List<String> flags})> els, String what,
+      String who, List<String> history) {
+    String first(String l) => l.split(' | ').first.trim();
+    bool did(String text) => history.any((h) => h.contains(text) && h.contains('→ ok'));
+    final whoWords = _words(who).where((w) => w.length > 2).toList();
+    final firstName = whoWords.isEmpty ? who.toLowerCase() : whoWords.first;
+    String compact(String s) => s.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+    final selected = history.where((h) => h.contains('Select "') && h.contains('→ ok')).map((h) => RegExp(r'Select "([^"]+)"').firstMatch(h)?.group(1)).whereType<String>().lastOrNull;
+
+    if (did('Tap "Send')) {
+      return {'done': true, 'summary': 'Sent the $what to ${selected ?? who}.', 'how': 'rule'};
+    }
+    final sendBtn = els.where((e) => e.flags.contains('tap') && RegExp(r'^send( separately)?$', caseSensitive: false).hasMatch(first(e.label))).firstOrNull;
+    if (sendBtn != null && selected != null) {
+      // Approval shows exactly who it goes to.
+      return {'action': {'type': 'tap', 'index': sendBtn.index}, 'describe': 'Tap "Send" — send the $what to $selected', 'how': 'rule', 'sensitive': true};
+    }
+    // Share sheet open: search the person (first name — Instagram shows usernames like "pavankumar"), then select them.
+    if (did('Tap "Share"')) {
+      final people = els
+          .where((e) => e.flags.contains('tap') && !e.flags.contains('input') && compact(first(e.label)).contains(firstName) &&
+              !RegExp(r'^(share|search|send|whatsapp|add to story|copy link)', caseSensitive: false).hasMatch(first(e.label)))
+          .toList();
+      final typed = did('Type "$firstName"');
+      if (people.length == 1 && selected == null) {
+        final l = first(people.first.label);
+        return {'action': {'type': 'tap', 'index': people.first.index}, 'describe': 'Select "$l"', 'how': 'rule', 'sensitive': false};
+      }
+      final input = els.where((e) => e.flags.contains('input')).firstOrNull;
+      if (input != null && !typed) {
+        return {'action': {'type': 'type', 'index': input.index, 'text': firstName}, 'describe': 'Type "$firstName"', 'how': 'rule'};
+      }
+      if (people.length > 1 && selected == null) {
+        // Several matches → let the user pick (LEO asks, never guesses a recipient).
+        return {'ask': 'I see ${people.map((p) => first(p.label)).take(4).join(', ')}. Which one should get the $what?', 'how': 'rule',
+            'choices': [for (final p in people.take(4)) {'label': first(p.label), 'index': p.index}]};
+      }
+      return null;
+    }
+    // Viewing the reel/post: press its share (paper-plane) button.
+    final shareBtn = els
+        .where((e) => e.flags.contains('tap') && RegExp(r'^(share|send post|share (reel|post|video)|send (reel|post))\b', caseSensitive: false).hasMatch(first(e.label)))
+        .firstOrNull;
+    if (shareBtn != null && (what != 'reel' || did('Tap "Reels"') || els.any((e) => RegExp(r'\breels?\b', caseSensitive: false).hasMatch(e.label) && e.flags.contains('selected')))) {
+      return {'action': {'type': 'tap', 'index': shareBtn.index}, 'describe': 'Tap "Share"', 'how': 'rule', 'sensitive': false};
+    }
+    // Go to Reels first.
+    if (what == 'reel' && !did('Tap "Reels"')) {
+      final reels = els.where((e) => e.flags.contains('tap') && RegExp(r'^reels?$', caseSensitive: false).hasMatch(first(e.label))).firstOrNull;
+      if (reels != null) return {'action': {'type': 'tap', 'index': reels.index}, 'describe': 'Tap "Reels"', 'how': 'rule'};
+    }
+    if (shareBtn != null) return {'action': {'type': 'tap', 'index': shareBtn.index}, 'describe': 'Tap "Share"', 'how': 'rule', 'sensitive': false};
+    return null;
+  }
+
   static bool _did(List<String> history, String type) =>
       history.any((h) => RegExp('^\\d+\\. $type\\b').hasMatch(h) && h.contains('→ ok'));
 
@@ -126,6 +190,13 @@ class LocalAgentBrain {
       final cart = els.where((e) => e.flags.contains('tap') && RegExp(r'add to (cart|basket)', caseSensitive: false).hasMatch(e.label)).firstOrNull;
       if (cart != null && !history.any((h) => h.contains('Add to')))
         return {'action': {'type': 'tap', 'index': cart.index}, 'describe': 'Tap "Add to cart"', 'how': 'rule'};
+    }
+
+    // ---- Rule: share a reel / post / video to someone (Instagram-style share sheet).
+    final share = shareTarget(goal);
+    if (share != null) {
+      final plan = _shareStep(els, share.what, share.who, history);
+      if (plan != null) return plan;
     }
 
     // ---- Rule 2: search flow.
@@ -178,7 +249,9 @@ class LocalAgentBrain {
       for (final s in scored.take(8)) (text: s.text, plan: s.plan),
       (text: 'Scroll down', plan: {'action': {'type': 'scroll', 'dir': 'down'}, 'describe': 'Scroll down'}),
       (text: 'Go back', plan: {'action': {'type': 'back'}, 'describe': 'Go back'}),
-      (text: 'The goal is already achieved', plan: {'done': true, 'summary': 'Done.'}),
+      // Only after real progress — otherwise a small model "finishes" right after opening the app.
+      if (history.where((h) => h.contains('→ ok')).length >= 2)
+        (text: 'The goal is already achieved', plan: {'done': true, 'summary': 'Done.'}),
     ];
     final prompt = '<|im_start|>system\nYou help operate a phone. Pick the option that moves closest to the goal. '
         'Answer with the option number only.<|im_end|>\n'

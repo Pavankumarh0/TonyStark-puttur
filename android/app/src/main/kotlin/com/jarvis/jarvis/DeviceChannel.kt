@@ -129,7 +129,11 @@ object DeviceChannel {
                     else mapOf("status" to "failed", "reason" to "$label is not installed")
                     if (launched["status"] == "failed" || launched["status"] == "results_opened") return@background launched
                     // Never claim playback on the app's word: confirm its media session is PLAYING.
-                    val np = MediaBridge.waitForPlaying(app_, pkg, 8000)
+                    var np = MediaBridge.waitForPlaying(app_, pkg, if (app == "youtube") 8000 else 5000)
+                    if (np == null && app != "youtube" && MediaAutomator.tapBestResult(pkg, q) != null) {
+                        // Results were shown but nothing played (free Spotify etc.): we tapped the best song row.
+                        np = MediaBridge.waitForPlaying(app_, pkg, 7000)
+                    }
                     if (np != null) launched + mapOf("status" to "playing", "title" to (np["title"] ?: launched["title"]))
                     else mapOf("status" to "results_opened",
                         "reason" to "$label opened, but playback did not start (it may need you to tap play or sign in)")

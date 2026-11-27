@@ -1423,6 +1423,16 @@ class JarvisOrchestrator extends ChangeNotifier {
       }
       if (ask != null && ask.isNotEmpty) {
         unawaited(device.overlayUpdate(title: 'LEO · NEEDS YOU', detail: ask, warn: true));
+        final choices = (plan['choices'] as List?)?.cast<Map>();
+        if (choices != null && choices.isNotEmpty) {
+          final i = await _askChoice(ask, [for (final c in choices) '${c['label']}'], tr: tr);
+          final pick = choices[i];
+          final r = await device.screenAct('tap', index: (pick['index'] as num).toInt());
+          tr.addStep(TaskStep(id: 'pick$step', description: 'Select "${pick['label']}"', status: r['ok'] == true ? StepStatus.done : StepStatus.failed, detail: 'you chose'));
+          history.add('$step. tap [${pick['index']}] — Select "${pick['label']}" → ${r['ok'] == true ? 'ok' : 'FAILED'}');
+          await Future<void>.delayed(const Duration(milliseconds: 800));
+          continue;
+        }
         final answer = await _askFreeText(tr, ask);
         history.add('$step. asked user "$ask" → "$answer"');
         continue;
@@ -1452,9 +1462,11 @@ class JarvisOrchestrator extends ChangeNotifier {
       final screenLine = index == null
           ? ''
           : ((dump['screen'] as String).split('\n').firstWhere((l) => l.startsWith('[$index]'), orElse: () => ''));
+      // A fixed recipe may declare a step harmless (e.g. opening the share sheet); the model never can.
+      final declaredSafe = plan['how'] == 'rule' && plan['sensitive'] == false;
       final sensitive = plan['sensitive'] == true ||
-          (type == 'tap' && _sensitiveWords.hasMatch(screenLine)) ||
-          (type == 'submit' && _sensitiveWords.hasMatch(describe));
+          (!declaredSafe && type == 'tap' && _sensitiveWords.hasMatch(screenLine)) ||
+          (!declaredSafe && type == 'submit' && _sensitiveWords.hasMatch(describe));
       final sid = 's$step';
       final how = switch (plan['how']) {
         'rule' => 'decided by rule',
@@ -2028,7 +2040,13 @@ class JarvisOrchestrator extends ChangeNotifier {
     if (!await device.accessibilityEnabled()) throw Exception('I need the LEO accessibility service to work with what\'s on screen.');
     final under = assistMode; // invoked from the assistant panel → act on the app underneath
     if (cmd == ScreenCommand.read) {
-      final t = await device.screenText(skipOwn: true);
+      var t = await device.screenText(skipOwn: true);
+      if (t['ok'] != true && t['reason'] != 'blocked_app' && under) {
+        // The panel can hide the app's window from accessibility: step aside, then read the app itself.
+        await device.closeAssist();
+        await Future<void>.delayed(const Duration(milliseconds: 800));
+        t = await device.screenText(skipOwn: true);
+      }
       if (t['ok'] != true) {
         throw Exception(t['reason'] == 'blocked_app' ? 'I don\'t read banking or payment apps.' : 'I can\'t read this screen.');
       }

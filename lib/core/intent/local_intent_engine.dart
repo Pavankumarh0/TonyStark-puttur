@@ -112,7 +112,12 @@ class LocalIntentEngine {
   // ---------------------------------------------------------------- media controls (local)
   static const _mediaNoun = r"(the )?(music|song|songs|video|track|playback|youtube|spotify|audio)";
   LocalIntent? _mediaControl(String n) {
-    final t = n.replaceFirst(RegExp(r"^(uh|um|hey|ok|okay) "), '');
+    // "I said pause the music in Spotify", "please stop the song on youtube now" → same as "pause the music".
+    final t = n
+        .replaceFirst(RegExp(r"^(uh|um|hey|ok|okay|leo|no|i said|i told you( to)?|just|please|can you|could you)( |$)"), '')
+        .replaceFirst(RegExp(r"^(i said|just|please|can you|could you) "), '')
+        .replaceFirst(RegExp(r" (in|on|from) (spotify|youtube music|yt music|youtube|the player|the app)$"), '')
+        .trim();
     if (RegExp("^(pause|stop|halt) $_mediaNoun( please| now)?\$").hasMatch(t)) return const MediaControlIntent(MediaAction.pause);
     if (RegExp("^(resume|continue|unpause|play) $_mediaNoun( please| again)?\$").hasMatch(t)) return const MediaControlIntent(MediaAction.play);
     if (RegExp(r"^(next|skip)( song| track| video| one)?( please)?$|^(play )?(the )?next (song|track|video)$|^skip (this|the) (song|track|video)$").hasMatch(t)) {

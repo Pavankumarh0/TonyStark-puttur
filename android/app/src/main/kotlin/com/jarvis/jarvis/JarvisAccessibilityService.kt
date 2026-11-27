@@ -57,5 +57,14 @@ class JarvisAccessibilityService : AccessibilityService() {
 
     companion object {
         @Volatile var instance: JarvisAccessibilityService? = null
+            get() {
+                // The system can unbind/rebind the service for a moment (other a11y tools, UI testing,
+                // settings changes). Off the main thread, wait briefly instead of failing the task.
+                if (field == null && android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+                    val end = System.currentTimeMillis() + 3000
+                    while (field == null && System.currentTimeMillis() < end) Thread.sleep(100)
+                }
+                return field
+            }
     }
 }
