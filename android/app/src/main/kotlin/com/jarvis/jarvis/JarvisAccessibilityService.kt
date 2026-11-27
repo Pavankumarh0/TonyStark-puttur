@@ -41,6 +41,8 @@ class JarvisAccessibilityService : AccessibilityService() {
     fun allowExtraPackages(extra: Set<String>) {
         val info = serviceInfo ?: return
         if (basePackages == null) basePackages = info.packageNames ?: emptyArray()
+        // Full-access mode (no package filter): nothing to widen — and setting a list would NARROW it.
+        if (basePackages!!.isEmpty()) return
         info.packageNames = (basePackages!!.toSet() + extra).toTypedArray()
         serviceInfo = info
     }

@@ -166,6 +166,23 @@ class DeviceBridge {
     return [for (final m in l) {'name': m['name'] as String, 'email': m['email'] as String}];
   }
 
+  // ---- generic screen control (accessibility)
+  Future<Map<String, dynamic>> screenDump() async =>
+      await _ch.invokeMapMethod<String, dynamic>('screenDump') ?? const {'ok': false, 'reason': 'no_result'};
+  Future<Map<String, dynamic>> screenAct(String type, {int? index, String? text, String? dir, String? package}) async =>
+      await _ch.invokeMapMethod<String, dynamic>('screenAct', {'type': type, 'index': index, 'text': text, 'dir': dir, 'package': package}) ??
+      const {'ok': false};
+  Future<bool> isBlockedApp(String pkg) async => await _ch.invokeMethod<bool>('isBlockedApp', {'package': pkg}) ?? false;
+  /// Real on/off via Quick Settings. status: already | changed | unknown | unchanged | not_found | accessibility_off
+  Future<Map<String, dynamic>> quickToggle(String kind, bool on) async =>
+      await _ch.invokeMapMethod<String, dynamic>('quickToggle', {'kind': kind, 'on': on}) ?? const {'ok': false};
+
+  // ---- reply straight from a chat notification
+  Future<List<Map<String, dynamic>>> replyTargets(String who) async =>
+      [for (final m in await _ch.invokeListMethod<Map>('replyTargets', {'who': who}) ?? []) Map<String, dynamic>.from(m)];
+  Future<Map<String, dynamic>> notificationReply(String key, String text) async =>
+      await _ch.invokeMapMethod<String, dynamic>('notificationReply', {'key': key, 'text': text}) ?? const {'ok': false};
+
   // ---- sign-in help (LEO only acts on the user's answers; never types passwords)
   Future<Map<String, dynamic>> loginScan(String pkg) async =>
       await _ch.invokeMapMethod<String, dynamic>('loginScan', {'package': pkg}) ?? const {'needsLogin': false};
