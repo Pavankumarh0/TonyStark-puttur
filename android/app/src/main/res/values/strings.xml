@@ -1,4 +1,4 @@
 <resources>
     <string name="accessibility_label">LEO device control</string>
-    <string name="accessibility_description">Lets LEO operate your phone by voice: open apps, tap, type, scroll and switch settings for the tasks you ask. Sending, deleting, paying or posting always waits for your approval. LEO never types passwords and refuses banking and payment apps. When LEO plans an unfamiliar task, a text summary of the current screen (never passwords or images) is sent to Gemini.</string>
+    <string name="accessibility_description">Lets LEO operate your phone by voice: open apps, tap, type, scroll and switch settings for the tasks you ask. Sending, deleting, paying or posting always waits for your approval. LEO never types passwords and refuses banking and payment apps. When LEO operates an app for an unfamiliar task, a text summary of the screen (never passwords or images; phone numbers, emails and codes masked) is sent to OpenAI, which is not allowed to use it for training. Every request is listed in LEO\'s privacy ledger.</string>
 </resources>

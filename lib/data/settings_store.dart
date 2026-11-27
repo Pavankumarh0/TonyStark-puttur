@@ -29,6 +29,12 @@ class SettingsStore extends ChangeNotifier {
       final v = _clean(await _secure.read(key: 'secret_${k.name}'));
       if (v.isNotEmpty) _secrets[k] = v;
     }
+    // One-time switch to the OpenAI screen agent (chosen as LEO's brain) for phones that had the
+    // older on-device default saved. The user can still pick "On-device" in Settings afterwards.
+    if (!(_prefs.getBool('agent_brain_v2') ?? false)) {
+      if (hasSecret(SecretKey.openai)) await _prefs.setString('agent_brain', 'gemini');
+      await _prefs.setBool('agent_brain_v2', true);
+    }
   }
 
   String? secret(SecretKey k) {
