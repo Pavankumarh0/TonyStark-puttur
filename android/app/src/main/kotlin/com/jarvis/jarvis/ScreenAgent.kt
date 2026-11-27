@@ -68,7 +68,8 @@ object ScreenAgent {
                 if (n.isVisibleToUser && !n.isPassword && !n.isEditable) {
                     // Web pages often carry their text as a description instead of text.
                     val t = (n.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }
-                        ?: n.contentDescription?.toString()?.trim().takeIf { n.childCount == 0 } ?: "").trim()
+                        // (not for buttons — "Refresh", "Bookmarks" aren't content)
+                        ?: n.contentDescription?.toString()?.trim().takeIf { n.childCount == 0 && !n.isClickable } ?: "").trim()
                     val isUrlBar = n.viewIdResourceName?.contains("url", ignoreCase = true) == true ||
                         n.viewIdResourceName?.contains("location_bar", ignoreCase = true) == true
                     if (t.length > 1 && !isUrlBar) out += t.take(300)
