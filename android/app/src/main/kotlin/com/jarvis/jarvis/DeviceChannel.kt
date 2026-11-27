@@ -141,6 +141,7 @@ object DeviceChannel {
             }
             // ---------------- process-scoped microphone
             "wakePopup" -> result.success(WakePopup.show(app))
+            "uiVisible" -> result.success(JarvisApplication.visibleScreens > 0)
             "micStart" -> result.success(MicStreamer.start())
             "micStop" -> { MicStreamer.stop(); result.success(null) }
             "micRunning" -> result.success(MicStreamer.isRunning)

@@ -23,7 +23,7 @@ class IntentContext {
 /// [UnknownIntent], [KnowledgeIntent] and [WriteIntent] ever reach Gemini.
 class LocalIntentEngine {
   static final _leadingFiller = RegExp(
-    r"^((?:uh+|um+|hmm+|so|well|and|okay so|ok so)[\s,.]+)?((hey|ok|okay|hi|yo)[\s,]+)?((?:jarvis|leo)[\s,.!:]*)?"
+    r"^((?:uh+|um+|hmm+|so|well|and|okay so|ok so)[\s,.]+)?((hey|ok|okay|hi|hello|hii|yo|excuse me|listen)[\s,.!]+)?((?:jarvis|leo)[\s,.!:]*)?"
     r"((please|kindly|can you|could you|would you|will you|can u|could u|i want you to|i need you to|i'd like you to)[\s,]+)*",
     caseSensitive: false,
   );
@@ -40,7 +40,13 @@ class LocalIntentEngine {
     }
     t = t.replaceAll(RegExp(r'\s+please[.!?]*$', caseSensitive: false), '');
     // "…send a reel to Pawan Kumar?" is still a command — but keep punctuation of dictated messages.
-    if (!RegExp(r"\b(saying|say|that|message|text|tell|reply|write|ask)\b", caseSensitive: false).hasMatch(t)) {
+    // A command phrased politely ("send a message to X saying hi?") is still a command.
+    final imperative = RegExp(
+            r"^(send|open|play|call|message|text|whatsapp|set|turn|switch|show|read|search|find|book|schedule|remind|"
+            r"delete|install|share|start|stop|pause|resume|take|launch|go to|navigate|check)\b",
+            caseSensitive: false)
+        .hasMatch(t);
+    if (imperative || !RegExp(r"\b(saying|say|that|message|text|tell|reply|write|ask)\b", caseSensitive: false).hasMatch(t)) {
       t = t.replaceAll(RegExp(r'\s*\?+$'), '');
     }
     return t.trim();
@@ -141,6 +147,16 @@ class LocalIntentEngine {
     if (RegExp(r"^(stop|halt|abort|cancel|kill) (everything|all|all tasks|it all)( now)?$").hasMatch(n) ||
         _isOneOf(n, ['emergency stop', 'stop all tasks'])) {
       return const StopEverythingIntent();
+    }
+    // Ending the conversation: "thank you bye", "ok that's all", "nothing else", "no thanks", "I'm done".
+    if (RegExp(r"^(ok |okay |no |nope |alright |all right )?((thank you|thanks)( so much| a lot| leo| sir)?,? )?"
+            r"(bye|bye bye|goodbye|good bye|see you|see you later|that's all|that is all|that's it|that is it|nothing|nothing else|"
+            r"no thanks|no thank you|i'm done|i am done|we're done|done for now|that will be all|that'll be all)"
+            r"( leo| sir| for now| thanks| thank you)?$")
+            .hasMatch(n) &&
+        // While LEO waits for a yes/no or a choice, "no thanks" answers THAT question.
+        !(ctx.awaitingApproval || ctx.choiceCount > 0)) {
+      return const StopListeningIntent();
     }
     if (_isOneOf(n, [
       'stop listening', 'go to sleep', 'sleep', 'goodbye', 'bye', "that's all", 'that is all',

@@ -151,6 +151,15 @@ class DeviceBridge {
     }
   }
 
+  /// Is a LEO screen (main app or assistant panel) showing right now?
+  Future<bool> uiVisible() async {
+    try {
+      return await _ch.invokeMethod<bool>('uiVisible') ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
   Future<void> listenFocus(bool on) => _ch.invokeMethod('listenFocus', {'on': on});
 
   // ---- everyday phone actions (local, no AI). Each returns {ok, reason?}.

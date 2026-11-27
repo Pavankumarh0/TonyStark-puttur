@@ -314,8 +314,8 @@ class JarvisOrchestrator extends ChangeNotifier {
       } else if (ack) {
         await _say(greeter.shortAck(address: settings.address), store: false);
       }
-      var followUps = 0;
       var idleWhileWaiting = 0;
+      var silentTurns = 0;
       while (!_stopLoop) {
         await _untilNotSpeaking();
         if (_stopLoop) break;
@@ -335,26 +335,47 @@ class JarvisOrchestrator extends ChangeNotifier {
         if (heard == null) {
           if (waitingOnUser && idleWhileWaiting++ < 3) continue; // keep waiting for an answer for ~30 s
           if (taskBusy) continue; // keep listening for STOP while a task runs
+          // Conversation mode: don't vanish on a pause — check once, then step back politely.
+          if (settings.followUpListening && silentTurns++ == 0) {
+            await _say('Anything else, ${settings.address}?', kind: 'question');
+            continue;
+          }
+          await _say("I'll be right here, ${settings.address}. Just say Leo.", kind: 'conversation');
           break;
         }
         idleWhileWaiting = 0;
+        silentTurns = 0;
         await handleInput(heard, source: 'voice');
         final stillWaiting = approvals.pending != null || choice != null || _freeTextWait != null;
         final stillBusy = task?.state == AgentState.running;
         if (stillWaiting || stillBusy) continue;
-        if (!settings.followUpListening || followUps++ >= 1) break;
+        // Keep the conversation going until the user ends it ("thank you", "bye", "that's all").
+        if (!settings.followUpListening) break;
       }
     } finally {
       _loopRunning = false;
       voice = VoicePhase.idle;
+      if (_listeningPill) {
+        _listeningPill = false;
+        unawaited(device.overlayHide());
+      }
       await device.listenFocus(false);
       notifyListeners();
     }
   }
 
+  bool _listeningPill = false;
+
   Future<String?> _listen({required Duration timeout}) async {
     voice = VoicePhase.listening;
     notifyListeners();
+    // Mid-conversation but another app is in front (e.g. LEO just opened it): show a small
+    // "LEO · LISTENING" bar so it's clear LEO is still with you.
+    if (_loopRunning && !(task?.state.isActive ?? false) && !await device.uiVisible()) {
+      _listeningPill = true;
+      unawaited(device.overlayShow().then((_) => device.overlayUpdate(
+          title: 'LEO · LISTENING', detail: 'Go ahead, ${settings.address} — say "thank you" or "bye" to finish')));
+    }
     try {
       final text = await speechIn.listenOnce(
         noSpeechTimeout: timeout,
@@ -397,6 +418,11 @@ class JarvisOrchestrator extends ChangeNotifier {
   Future<void> handleInput(String raw, {required String source}) async {
     _lastUserAt = DateTime.now();
     _currentUtterance = LocalIntentEngine.clean(raw);
+    // Just the wake word ("Leo." / "Hey Leo?"), e.g. said again mid-conversation: answer, don't ask AI.
+    if (LocalIntentEngine.norm(_currentUtterance).replaceAll(RegExp(r'\b(leo|jarvis|hey|hi|ok|okay)\b'), '').trim().isEmpty) {
+      await _say(greeter.shortAck(address: settings.address), store: false);
+      return;
+    }
     var intent = engine.parse(raw, ctx: _ctx);
     // Rules didn't match → try the on-device trained model before ever considering AI.
     if (intent is UnknownIntent && _freeTextWait == null && _choiceWait == null && _approvalWait == null) {
@@ -447,7 +473,11 @@ class JarvisOrchestrator extends ChangeNotifier {
         return continueWhereStopped();
       case StopListeningIntent():
         _stopLoop = true;
-        return _say('Very well, ${settings.address}. Say "Leo" whenever you need me.');
+        await _say(RegExp(r'thank', caseSensitive: false).hasMatch(_currentUtterance)
+            ? 'Always a pleasure, ${settings.address}. Say "Leo" whenever you need me.'
+            : 'Very well, ${settings.address}. Say "Leo" whenever you need me.');
+        if (assistMode) unawaited(device.closeAssist()); // like Gemini: the panel goes away when you're done
+        return;
       default:
         break;
     }
@@ -637,6 +667,11 @@ class JarvisOrchestrator extends ChangeNotifier {
         await _say('All systems operational, $a. Thank you for asking. What can I do for you?');
       case ThanksIntent():
         await _say('Always a pleasure, $a.');
+        // "Thank you" ends the conversation; "great"/"perfect" just acknowledge.
+        if (RegExp(r'\bthank', caseSensitive: false).hasMatch(_currentUtterance)) {
+          _stopLoop = true;
+          if (assistMode) unawaited(device.closeAssist());
+        }
       case RememberIntent(:final fact):
         await memory.addFact(fact);
         await _say('Noted, $a. I\'ll remember that: $fact. You can review or delete it under Memory.', kind: 'remember');

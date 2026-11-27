@@ -175,4 +175,18 @@ void main() {
       expect(LocalAgentBrain.detectQuestion(screen), isNull);
     });
   });
+
+  group('Ending the conversation', () {
+    for (final t in ['thank you bye', 'Thank you, bye.', 'ok that\'s all', 'nothing else', 'bye leo', 'thanks, that\'s it', 'I\'m done', 'no thanks']) {
+      test(t, () => expect(e.parse(t), isA<StopListeningIntent>()));
+    }
+    test('thank you → thanks (ends in orchestrator)', () => expect(e.parse('thank you'), isA<ThanksIntent>()));
+    test('"no thanks" during an approval is a rejection', () =>
+        expect(e.parse('no thanks', ctx: const IntentContext(awaitingApproval: true)), isNot(isA<StopListeningIntent>())));
+    test('real requests are not goodbyes', () => expect(e.parse('play nothing else matters'), isNot(isA<StopListeningIntent>())));
+  });
+
+  test('"Hello, can you send … saying hi in WhatsApp?" is a local WhatsApp send', () =>
+      expect(e.parse('Hello, can you send a message to Yadava saying hi in WhatsApp?'), isA<SendMessageIntent>()));
+  test('dictated question keeps its ?', () => expect(e.parse('message Rahul saying are you coming?'), isA<SendMessageIntent>()));
 }
