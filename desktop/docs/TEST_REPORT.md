@@ -46,3 +46,25 @@
 A screenshot taken for the UI test captured the user's screen after focus moved to VS Code, showing
 `lib/.env` (API keys). The file was deleted immediately; GUI automation was stopped and remaining checks
 used the IPC client. Recommendation: rotate the keys shown in that file.
+
+## ESP32 TFT firmware v0.1.0 — 2026-11-28, real device on COM9
+Board ESP32-D0WD-V3, 2.8" ILI9341 + XPT2046 (wiring taken from the chiguru project). Built with PlatformIO
+(espressif32 6.x, TFT_eSPI, ArduinoJson): RAM 6.8 %, flash 27.1 %. Flashed and hash-verified.
+Tested with `desktop/firmware/tools/tft_test.py` against the physical board — **25/25 PASS**:
+
+| Test | Result |
+|---|---|
+| HELLO after reset (fw, chip, paired, touch calibration reused) / on request, same session | PASS |
+| Broken JSON, oversized frame, wrong version, unknown type (`RUN_SHELL`) → refused with ERROR | PASS |
+| `PAIR_KEY` without a confirmed pairing; signed command while unpaired → refused | PASS |
+| Pairing: code shown on the TFT, **user tapped Confirm on the device**, key delivered, `PAIR_DONE` signed with it | PASS |
+| Pairing key stored on the PC with Windows DPAPI (not plaintext) | PASS |
+| Signed PING → signed PONG | PASS |
+| Replay (same seq), tampered body, wrong key, other session id, unsigned frame → refused | PASS |
+| STATUS, NOTIFY, APPROVAL_REQUEST displayed (signed ACKs) | PASS |
+| **User tapped Approve on the TFT** → signed UI_EVENT carrying the request id + nonce | PASS |
+| Reconnect (port reopened = board reset): new session id; frames from the old session refused | PASS |
+
+Not yet done: the desktop agent's TFT service (Dart) that uses this protocol, and the other 7 screens (Phase 6).
+The board's previous firmware was not backed up (read_flash failed twice with serial noise); it is the
+chiguru kiosk, whose source is in the chiguru repo and can be reflashed from there.
