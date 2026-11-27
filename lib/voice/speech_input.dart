@@ -21,7 +21,7 @@ class SpeechInput {
   final MemoryRepository memory;
 
   /// Names that improve recognition (contacts mentioned recently, app names, …).
-  final Set<String> keyterms = {'JARVIS', 'WhatsApp', 'WhatsApp Business'};
+  final Set<String> keyterms = {'Leo', 'WhatsApp', 'WhatsApp Business', 'YouTube'};
 
   SpeechInput(this.mic, this.sarvam, this.settings, this.memory);
 

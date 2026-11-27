@@ -72,7 +72,7 @@ ThemeData jarvisTheme() {
 extension DisplayStateStyle on DisplayState {
   String get label => switch (this) {
         DisplayState.offline => 'STANDBY',
-        DisplayState.waiting => 'WAITING FOR "JARVIS"',
+        DisplayState.waiting => 'WAITING FOR "LEO"',
         DisplayState.listening => 'LISTENING',
         DisplayState.thinking => 'THINKING',
         DisplayState.speaking => 'SPEAKING',

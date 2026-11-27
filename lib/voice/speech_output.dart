@@ -25,6 +25,14 @@ class SpeechOutput extends ChangeNotifier {
 
   SpeechOutput(this.settings, this.sarvam, this.memory) {
     _player.setReleaseMode(ReleaseMode.stop);
+    // Speak as an assistant: other audio is ducked (lowered), not stopped.
+    _player.setAudioContext(AudioContext(
+      android: const AudioContextAndroid(
+        usageType: AndroidUsageType.assistant,
+        contentType: AndroidContentType.speech,
+        audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+      ),
+    ));
     _tts.setLanguage('en-IN');
     _tts.setSpeechRate(0.5);
     _tts.awaitSpeakCompletion(true);

@@ -50,7 +50,7 @@ object WhatsAppAutomator {
             mapOf("status" to status, "reason" to reason, "chatTitle" to chat, "candidates" to candidates, "trace" to trace)
 
         val svc = JarvisAccessibilityService.instance
-            ?: return result("failed", "The JARVIS accessibility service is not running")
+            ?: return result("failed", "The LEO accessibility service is not running")
         try {
             var chatTitle: String? = null
             if (phone != null) {

@@ -129,7 +129,7 @@ class _Header extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (wakeText, wakeColor) = switch (mic.wakeStatus) {
-      WakeWordStatus.armed => ('"Jarvis" armed · on-device', JColors.green),
+      WakeWordStatus.armed => ('"Leo" armed · on-device', JColors.green),
       WakeWordStatus.starting => ('Starting wake word…', JColors.amber),
       WakeWordStatus.error => ('Wake word error', JColors.red),
       WakeWordStatus.off => (o.listeningEnabled ? 'Mic on' : 'Not listening', JColors.dim),
@@ -141,7 +141,7 @@ class _Header extends StatelessWidget {
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('J.A.R.V.I.S',
+              const Text('L.E.O',
                   style: TextStyle(fontSize: 22, fontWeight: FontWeight.w300, letterSpacing: 6, color: JColors.cyan)),
               const SizedBox(height: 2),
               Row(children: [
@@ -549,7 +549,7 @@ class _Conversation extends StatelessWidget {
       if (current.isEmpty && o.previousSessionTail.isEmpty)
         const Padding(
           padding: EdgeInsets.all(24),
-          child: Text('Say "Jarvis", tap the orb, or type below.\nTry: "Open WhatsApp" · "What is a black hole?" · "Write an email to my professor asking for leave"',
+          child: Text('Say "Leo", tap the orb, or type below.\nTry: "Open WhatsApp" · "What is a black hole?" · "Write an email to my professor asking for leave"',
               textAlign: TextAlign.center, style: TextStyle(color: JColors.dim, height: 1.6)),
         ),
     ]);
@@ -673,7 +673,7 @@ class _InputBar extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Tooltip(
-            message: listening ? 'Stop listening' : 'Talk to JARVIS',
+            message: listening ? 'Stop listening' : 'Talk to LEO',
             child: InkWell(
               onTap: onMic,
               customBorder: const CircleBorder(),

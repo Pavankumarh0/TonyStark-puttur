@@ -43,7 +43,7 @@ void main() {
     test('launch youtube app', () => expect((e.parse('launch the YouTube app') as OpenAppIntent).appName, 'YouTube'));
 
     test('demo sentence → WhatsApp send with exact message', () {
-      final i = e.parse("JARVIS, open WhatsApp and send a message to Yadava ISE saying I'm not coming to college today.");
+      final i = e.parse("LEO, open WhatsApp and send a message to Yadava ISE saying I'm not coming to college today.");
       expect(i, isA<SendMessageIntent>());
       final s = i as SendMessageIntent;
       expect(s.app, MessagingApp.whatsapp);

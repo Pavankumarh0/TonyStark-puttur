@@ -73,15 +73,15 @@ class JarvisListenerService : Service() {
 
         @Volatile var running = false
         @Volatile var lastError: String? = null
-        @Volatile var status: String = "Listening for \"Jarvis\" (on-device)"
+        @Volatile var status: String = "Listening for \"Leo\" (on-device)"
 
         fun createChannel(ctx: Context) {
             if (Build.VERSION.SDK_INT >= 26) {
                 val nm = ctx.getSystemService(NotificationManager::class.java)
                 if (nm.getNotificationChannel(CHANNEL_ID) == null) {
                     nm.createNotificationChannel(
-                        NotificationChannel(CHANNEL_ID, "JARVIS listening", NotificationManager.IMPORTANCE_LOW).apply {
-                            description = "Shown while JARVIS can hear the wake word"
+                        NotificationChannel(CHANNEL_ID, "LEO listening", NotificationManager.IMPORTANCE_LOW).apply {
+                            description = "Shown while LEO can hear the wake word"
                             setShowBadge(false)
                         }
                     )
@@ -104,7 +104,7 @@ class JarvisListenerService : Service() {
             )
             return NotificationCompat.Builder(ctx, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_stat_jarvis)
-                .setContentTitle("JARVIS is listening")
+                .setContentTitle("LEO is listening")
                 .setContentText(status)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)

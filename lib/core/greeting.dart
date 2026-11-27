@@ -66,7 +66,7 @@ class GreetingGenerator {
     return g;
   }
 
-  /// Short acknowledgement when the user wakes JARVIS mid-conversation.
+  /// Short acknowledgement when the user wakes LEO mid-conversation.
   String shortAck({String address = 'sir'}) {
     final opts = ['Yes, $address?', 'At your service, $address.', 'Listening, $address.', 'Go ahead, $address.'];
     final pool = opts.where((o) => o != _last).toList();

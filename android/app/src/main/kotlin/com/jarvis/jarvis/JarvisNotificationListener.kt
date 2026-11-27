@@ -6,7 +6,7 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 
 /**
- * Reads the notifications that are currently showing for messaging/email apps so JARVIS can answer
+ * Reads the notifications that are currently showing for messaging/email apps so LEO can answer
  * "check my new WhatsApp messages / emails" entirely on-device (no AI, no network).
  * Requires the user to grant Notification access (Settings → Notifications → Device & app notifications).
  */

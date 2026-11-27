@@ -53,7 +53,7 @@ class LocalIntentClassifier {
     'resume': ['resume', 'continue', 'carry on', 'go on', 'keep going'],
     'cancel': ['cancel', 'cancel this task', 'forget it', 'never mind', 'drop it'],
     'status': ['what are you doing', 'status', 'what is happening', 'what are you working on', 'where are we'],
-    'greeting': ['hello', 'hi jarvis', 'hey', 'good morning', 'good evening', 'are you there'],
+    'greeting': ['hello', 'hi leo', 'hey', 'good morning', 'good evening', 'are you there'],
     'write': [
       'write an email to my professor', 'draft a leave letter', 'compose a message for my team', 'write a post about ai',
       'rewrite this paragraph', 'make this more professional', 'write a cover letter', 'draft a reply to the client',
@@ -185,7 +185,7 @@ class LocalIntentClassifier {
     return null;
   }
 
-  static const _common = {'please', 'jarvis', 'can', 'you', 'could', 'would', 'will', 'i', 'want', 'to', 'the', 'a', 'my', 'for', 'me', 'now', 'just'};
+  static const _common = {'please', 'jarvis', 'leo', 'can', 'you', 'could', 'would', 'will', 'i', 'want', 'to', 'the', 'a', 'my', 'for', 'me', 'now', 'just'};
   static const _mediaFiller = {..._common, 'play', 'put', 'on', 'start', 'playing', 'listen', 'hear', 'watch', 'in', 'youtube', 'spotify', 'music', 'search', 'and', 'video', 'of', 'some', 'favourite', 'favorite', 'app'};
   static const _callFiller = {..._common, 'call', 'phone', 'dial', 'ring', 'give', 'make', 'place', 'get', 'on', 'his', 'her', 'their', 'mobile', 'number', 'contact', 'up'};
   static const _openFiller = {..._common, 'open', 'launch', 'start', 'go', 'show', 'bring', 'up', 'app', 'application'};

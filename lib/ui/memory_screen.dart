@@ -5,7 +5,7 @@ import '../data/memory_repository.dart';
 import '../orchestrator/jarvis_orchestrator.dart';
 import 'theme.dart';
 
-/// Memory controls: explicit facts the user asked JARVIS to remember, plus deletion of history.
+/// Memory controls: explicit facts the user asked LEO to remember, plus deletion of history.
 class MemoryScreen extends StatefulWidget {
   const MemoryScreen({super.key});
 
@@ -49,7 +49,7 @@ class _MemoryScreenState extends State<MemoryScreen> {
         const Text('MEMORY', style: TextStyle(letterSpacing: 4, fontSize: 18, color: JColors.cyan)),
         const SizedBox(height: 6),
         const Text(
-          'Everything is stored only on this phone. When Gemini is needed, JARVIS sends just a few relevant snippets — never the whole history.',
+          'Everything is stored only on this phone. When Gemini is needed, LEO sends just a few relevant snippets — never the whole history.',
           style: TextStyle(color: JColors.dim, fontSize: 12),
         ),
         const SizedBox(height: 16),

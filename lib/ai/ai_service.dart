@@ -58,7 +58,7 @@ class AiService {
   bool get isConfigured => settings.hasSecret(SecretKey.gemini);
 
   String get _persona =>
-      'You are JARVIS, a calm, precise, witty-but-professional personal AI assistant. '
+      'You are LEO, a calm, precise, witty-but-professional personal AI assistant. '
       'Address the user as "${settings.address}" sparingly. Indian English is fine. '
       'Never claim you performed device actions; you only write and answer. Never invent memories: '
       'only use the context provided. If unsure, say so briefly.';

@@ -119,57 +119,47 @@ object DeviceChannel {
                 val app = call.argument<String>("app") ?: "youtube"
                 val q = call.argument<String>("query") ?: ""
                 background(result) {
-                    when (app) {
-                        "youtube_music" -> if (MediaAutomator.playFromSearch(app_, MediaAutomator.YT_MUSIC, q))
-                            mapOf("status" to "playing") else mapOf("status" to "failed", "reason" to "YouTube Music is not installed")
-                        "spotify" -> if (MediaAutomator.playFromSearch(app_, MediaAutomator.SPOTIFY, q))
-                            mapOf("status" to "playing") else mapOf("status" to "failed", "reason" to "Spotify is not installed")
-                        else -> MediaAutomator.playOnYouTube(app_, q)
+                    val (pkg, label) = when (app) {
+                        "youtube_music" -> MediaAutomator.YT_MUSIC to "YouTube Music"
+                        "spotify" -> MediaAutomator.SPOTIFY to "Spotify"
+                        else -> MediaAutomator.YOUTUBE to "YouTube"
                     }
+                    val launched: Map<String, Any?> = if (app == "youtube") MediaAutomator.playOnYouTube(app_, q)
+                    else if (MediaAutomator.playFromSearch(app_, pkg, q)) mapOf("status" to "requested")
+                    else mapOf("status" to "failed", "reason" to "$label is not installed")
+                    if (launched["status"] == "failed" || launched["status"] == "results_opened") return@background launched
+                    // Never claim playback on the app's word: confirm its media session is PLAYING.
+                    val np = MediaBridge.waitForPlaying(app_, pkg, 8000)
+                    if (np != null) launched + mapOf("status" to "playing", "title" to (np["title"] ?: launched["title"]))
+                    else mapOf("status" to "results_opened",
+                        "reason" to "$label opened, but playback did not start (it may need you to tap play or sign in)")
                 }
             }
             // ---------------- process-scoped microphone
             "micStart" -> result.success(MicStreamer.start())
             "micStop" -> { MicStreamer.stop(); result.success(null) }
             "micRunning" -> result.success(MicStreamer.isRunning)
-            // ---------------- media keys & volume (no AI) — works for whatever app is playing
+            // ---------------- media control (no AI): via the playing app's media session
             "mediaControl" -> {
-                val am = app.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
                 val action = call.argument<String>("action") ?: ""
-                val key = when (action) {
-                    "pause" -> android.view.KeyEvent.KEYCODE_MEDIA_PAUSE
-                    "play" -> android.view.KeyEvent.KEYCODE_MEDIA_PLAY
-                    "next" -> android.view.KeyEvent.KEYCODE_MEDIA_NEXT
-                    "previous" -> android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS
-                    else -> null
-                }
-                // Reports what ACTUALLY happened (checked before/after), never just "key sent".
-                when {
-                    key != null -> background(result) {
-                        val wasPlaying = am.isMusicActive
-                        if ((action == "pause" || action == "next" || action == "previous") && !wasPlaying) return@background "not_playing"
-                        if (action == "play" && wasPlaying) return@background "already_playing"
-                        am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, key))
-                        am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, key))
-                        Thread.sleep(900)
-                        val now = am.isMusicActive
-                        when (action) {
-                            "pause" -> if (!now) "paused" else "unchanged"
-                            "play" -> if (now) "playing" else "nothing_to_resume"
-                            else -> if (now) "done" else "unchanged"
-                        }
-                    }
-                    action == "volume_up" || action == "volume_down" -> {
+                val am = app.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                when (action) {
+                    "volume_up", "volume_down" -> {
                         val dir = if (action == "volume_up") android.media.AudioManager.ADJUST_RAISE else android.media.AudioManager.ADJUST_LOWER
                         repeat(2) { am.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, dir, android.media.AudioManager.FLAG_SHOW_UI) }
-                        result.success("done")
+                        result.success(mapOf("status" to "done"))
                     }
-                    action == "mute" -> {
+                    "mute" -> {
                         am.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_MUTE, android.media.AudioManager.FLAG_SHOW_UI)
-                        result.success("done")
+                        result.success(mapOf("status" to "done"))
                     }
-                    else -> result.success("unsupported")
+                    else -> background(result) { MediaBridge.control(app, action) }
                 }
+            }
+            "nowPlaying" -> background(result) { MediaBridge.nowPlaying(app) }
+            "listenFocus" -> {
+                if (call.argument<Boolean>("on") == true) MediaBridge.beginListening(app) else MediaBridge.endListening(app)
+                result.success(null)
             }
             // ---------------- phone calls (no AI)
             "placeCall" -> {

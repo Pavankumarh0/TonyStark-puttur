@@ -10,7 +10,7 @@ import io.flutter.embedding.engine.FlutterEngineCache
 /**
  * Half-screen assistant panel (like Gemini's overlay). Translucent window over whatever app is
  * open; the Flutter side renders a bottom panel when it receives the "assist" event.
- * Shares the single JARVIS engine so memory, tasks and the wake word stay in one place.
+ * Shares the single LEO engine so memory, tasks and the wake word stay in one place.
  */
 class AssistActivity : FlutterActivity() {
     override fun provideFlutterEngine(context: Context): FlutterEngine? =

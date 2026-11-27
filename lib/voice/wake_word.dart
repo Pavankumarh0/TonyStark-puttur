@@ -6,7 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:porcupine_flutter/porcupine.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
-import 'jarvis_keywords.dart';
+import 'leo_keywords.dart';
 
 /// An on-device wake-word detector fed with 16 kHz, 16-bit mono frames from [MicEngine].
 /// Nothing here touches the network.
@@ -14,14 +14,14 @@ abstract class WakeWordDetector {
   String get name;
   Future<void> init();
 
-  /// Returns true when "Jarvis" was detected in this frame.
+  /// Returns true when "Leo" was detected in this frame.
   Future<bool> process(List<int> frame);
   Future<void> dispose();
 }
 
 /// FREE, open-source (Apache-2.0), no account or key: sherpa-onnx streaming keyword spotter
 /// with a 3.3M-parameter English zipformer model bundled in the APK (assets/kws).
-/// Open vocabulary: the keyword is the BPE spelling of "JARVIS" (▁JA R VI S).
+/// Open vocabulary: the keyword is the BPE spelling of "LEO" (▁JA R VI S).
 class SherpaWakeWord implements WakeWordDetector {
   final double sensitivity; // 0.3 … 0.9, higher = triggers more easily
   SherpaWakeWord({this.sensitivity = 0.6});
@@ -36,7 +36,7 @@ class SherpaWakeWord implements WakeWordDetector {
 
   /// Native code needs real file paths, so the bundled model is copied out of the APK once.
   static Future<String> _modelDir() async {
-    final dir = Directory('${(await getApplicationSupportDirectory()).path}/kws_v2'); // v2: full gigaspeech model (the -mobile export crashes)
+    final dir = Directory('${(await getApplicationSupportDirectory()).path}/kws_v3'); // v3: LEO wake word (full gigaspeech model)
     if (!dir.existsSync()) dir.createSync(recursive: true);
     for (final a in _assets) {
       final f = File('${dir.path}/$a');
@@ -53,11 +53,11 @@ class SherpaWakeWord implements WakeWordDetector {
     sherpa.initBindings();
     final dir = await _modelDir();
     // Lower threshold = more sensitive. Sensitivity 0.6 → ~0.12 (validated offline: good recall,
-    // no false triggers on non-Jarvis speech). Many BPE spellings of JARVIS improve recall.
+    // no false triggers on non-Jarvis speech). Many BPE spellings of LEO improve recall.
     final threshold = (0.25 - sensitivity * 0.22).clamp(0.04, 0.22);
     final keywords = File('$dir/keywords.txt');
     await keywords.writeAsString(
-      jarvisTokenVariants.map((v) => '$v :2.0 #${threshold.toStringAsFixed(3)} @JARVIS').join('\n'),
+      leoTokenVariants.map((v) => '$v :2.0 #${threshold.toStringAsFixed(3)} @LEO').join('\n'),
     );
     final config = sherpa.KeywordSpotterConfig(
       model: sherpa.OnlineModelConfig(
@@ -109,7 +109,7 @@ class SherpaWakeWord implements WakeWordDetector {
   }
 }
 
-/// Optional: Picovoice Porcupine built-in "Jarvis" (needs a free Picovoice AccessKey).
+/// Optional: Picovoice Porcupine built-in "Leo" (needs a free Picovoice AccessKey).
 class PorcupineWakeWord implements WakeWordDetector {
   final String accessKey;
   final double sensitivity;

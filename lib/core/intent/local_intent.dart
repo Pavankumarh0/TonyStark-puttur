@@ -84,7 +84,7 @@ class SendMessageIntent extends LocalIntent {
   /// Exact text the user dictated. Null when the user did not say what to send.
   final String? message;
 
-  /// When set, the user asked JARVIS to compose the message about this topic (AI writer).
+  /// When set, the user asked LEO to compose the message about this topic (AI writer).
   final String? composeTopic;
   final bool isGroup;
 

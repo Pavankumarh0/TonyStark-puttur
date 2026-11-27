@@ -23,7 +23,7 @@ import '../voice/speech_output.dart';
 
 enum VoicePhase { idle, listening, transcribing }
 
-/// What the UI shows as JARVIS' visible state. Always derived from real component state.
+/// What the UI shows as LEO' visible state. Always derived from real component state.
 enum DisplayState { offline, waiting, listening, thinking, speaking, executing, approval, paused }
 
 class ChoicePrompt {
@@ -148,7 +148,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     final unfinished = await memory.unfinishedTasks();
     if (unfinished.isNotEmpty) task = unfinished.first;
     classifier.train(learned: await memory.learnedExamples());
-    debugPrint('JARVIS local-model: trained on ${classifier.exampleCount} examples');
+    debugPrint('LEO local-model: trained on ${classifier.exampleCount} examples');
     mic.onWake = _onWake;
     mic.addListener(notifyListeners);
     speechOut.addListener(() {
@@ -213,7 +213,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     if (await Permission.notification.isDenied) await Permission.notification.request();
     serviceRunning = await device.startListenerService();
     if (!serviceRunning) {
-      _setBanner('Android refused to start the listening service. Open JARVIS in the foreground and try again.');
+      _setBanner('Android refused to start the listening service. Open LEO in the foreground and try again.');
     }
     try {
       await mic.start();
@@ -250,14 +250,14 @@ class JarvisOrchestrator extends ChangeNotifier {
   String _serviceText() {
     final t = task;
     if (t != null && t.state.isActive) return 'Task: ${t.title} — ${t.state.label}';
-    return mic.wakeStatus == WakeWordStatus.armed ? 'Listening for "Jarvis" (on-device)' : 'Microphone ready — wake word off';
+    return mic.wakeStatus == WakeWordStatus.armed ? 'Listening for "Leo" (on-device)' : 'Microphone ready — wake word off';
   }
 
   // ------------------------------------------------------------------ voice entry points
   void _onWake() {
-    debugPrint('JARVIS mic-trigger: wake word detected');
+    debugPrint('LEO mic-trigger: wake word detected');
     if (speechOut.speaking) {
-      unawaited(speechOut.stop()); // barge-in: "Jarvis" interrupts speech
+      unawaited(speechOut.stop()); // barge-in: "Leo" interrupts speech
       if (_loopRunning) return; // the running loop listens next
     }
     if (voice != VoicePhase.idle) return;
@@ -267,7 +267,7 @@ class JarvisOrchestrator extends ChangeNotifier {
 
   /// Mic button: start/stop a voice turn manually.
   Future<void> tapMic() async {
-    debugPrint('JARVIS mic-trigger: mic button / orb tapped');
+    debugPrint('LEO mic-trigger: mic button / orb tapped');
     if (voice == VoicePhase.listening) {
       _stopLoop = true;
       speechIn.cancel();
@@ -285,6 +285,8 @@ class JarvisOrchestrator extends ChangeNotifier {
     }
     _loopRunning = true;
     _stopLoop = false;
+    // Like Gemini/Assistant: pause other audio while we listen; it resumes when we're done.
+    await device.listenFocus(true);
     try {
       if (greet) {
         final since = _lastUserAt == null ? null : DateTime.now().difference(_lastUserAt!);
@@ -332,6 +334,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     } finally {
       _loopRunning = false;
       voice = VoicePhase.idle;
+      await device.listenFocus(false);
       notifyListeners();
     }
   }
@@ -386,7 +389,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     if (intent is UnknownIntent && _freeTextWait == null && _choiceWait == null && _approvalWait == null) {
       final guess = classifier.classify(_currentUtterance);
       if (guess != null) {
-        debugPrint('JARVIS local-model: "${_currentUtterance}" → ${guess.runtimeType}');
+        debugPrint('LEO local-model: "${_currentUtterance}" → ${guess.runtimeType}');
         intent = guess;
       }
     }
@@ -395,6 +398,10 @@ class JarvisOrchestrator extends ChangeNotifier {
 
     // 0) Media controls act on the playing app immediately (no task needed).
     if (intent is MediaControlIntent) return _mediaControl(intent.action);
+    // Conversation context: after "play pesamale", a bare "pause"/"stop"/"resume" means the song.
+    if ((intent is PauseIntent || intent is StopIntent || intent is ResumeIntent) && await _mediaContextApplies()) {
+      return _mediaControl(intent is ResumeIntent ? MediaAction.play : MediaAction.pause);
+    }
 
     // 1) Interrupt controller — always local, always first.
     switch (intent) {
@@ -414,7 +421,7 @@ class JarvisOrchestrator extends ChangeNotifier {
         return continueWhereStopped();
       case StopListeningIntent():
         _stopLoop = true;
-        return _say('Very well, ${settings.address}. Say "Jarvis" whenever you need me.');
+        return _say('Very well, ${settings.address}. Say "Leo" whenever you need me.');
       default:
         break;
     }
@@ -972,20 +979,53 @@ class JarvisOrchestrator extends ChangeNotifier {
     };
     if (a == MediaAction.pause || a == MediaAction.mute) await speechOut.stop();
     final r = await device.mediaControl(key);
+    final status = r['status'] as String? ?? 'unchanged';
     final sir = settings.address;
-    final line = switch (r) {
-      'paused' => 'Paused.',
-      'not_playing' => 'Nothing is playing right now, $sir.',
-      'already_playing' => "It's already playing, $sir.",
-      'nothing_to_resume' => "There's nothing to resume, $sir.",
-      'unchanged' => "I sent the command, but the player didn't respond, $sir.",
-      _ => '', // playing / done: don't talk over the music
+    // Use the real title from the player, else what the user asked us to play earlier.
+    final title = _shortTitle(r['title'] as String?) ?? _lastMediaQuery;
+    if (r['title'] != null) _lastMediaQuery = _shortTitle(r['title'] as String?);
+    final it = title ?? 'the music';
+    final line = switch (status) {
+      'paused' => 'Paused $it, $sir.',
+      'playing' => 'Resuming $it.',
+      'not_playing' => title != null ? '$it isn\'t playing right now, $sir.' : 'Nothing is playing right now, $sir.',
+      'already_playing' => '$it is already playing, $sir.',
+      'nothing_to_resume' => 'There\'s nothing to resume, $sir.',
+      'unchanged' => 'I sent the command, but the player didn\'t respond, $sir.',
+      'done' => switch (a) {
+          MediaAction.next => 'Next track.',
+          MediaAction.previous => 'Previous track.',
+          MediaAction.volumeUp => 'Volume up.',
+          MediaAction.volumeDown => 'Volume down.',
+          MediaAction.mute => 'Muted.',
+          _ => 'Done.',
+        },
+      _ => 'Done.',
     };
-    if (line.isNotEmpty) {
-      await _say(line, kind: 'command');
-    } else {
-      await _store('jarvis', 'Done: ${key.replaceAll('_', ' ')}.', route: 'local', kind: 'command');
+    await _say(line, kind: 'command');
+    if (status == 'playing' || (status == 'done' && (a == MediaAction.next || a == MediaAction.previous))) {
+      // Music is (re)starting: end this listening turn so we don't record the song.
+      _lastMediaAt = DateTime.now();
+      _stopLoop = true;
+      speechIn.cancel();
     }
+  }
+
+  /// What the user last asked to play, e.g. "Pesamale" — used for natural follow-ups.
+  String? _lastMediaQuery;
+  DateTime? _lastMediaAt;
+
+  static String? _shortTitle(String? t) {
+    if (t == null || t.trim().isEmpty) return null;
+    final s = t.split(RegExp(r'\s[-|–(\[]\s?')).first.trim();
+    return s.isEmpty ? t.trim() : s;
+  }
+
+  /// "stop" / "pause" / "resume" right after music was started mean the MUSIC, not a LEO task.
+  Future<bool> _mediaContextApplies() async {
+    if (_tracker != null && _tracker!.snapshot.state.isActive) return false;
+    if (_lastMediaAt == null || DateTime.now().difference(_lastMediaAt!) > const Duration(hours: 3)) return false;
+    return true;
   }
 
   // ---- runner: play media (local — no AI)
@@ -1006,7 +1046,14 @@ class JarvisOrchestrator extends ChangeNotifier {
       tr.addStep(TaskStep(id: 'search', description: 'Search $appLabel for "$q"'));
       tr.addStep(const TaskStep(id: 'play', description: 'Start playback'));
     }
-    await _say('Playing $q on $appLabel, ${settings.address}.', kind: 'command');
+    await _say('Looking up $q on $appLabel, ${settings.address}.', kind: 'command');
+    _lastMediaQuery = q;
+    _lastMediaAt = DateTime.now();
+    // Let the music play: end this listening turn and release the mic's audio focus,
+    // otherwise follow-up listening would pause the song and transcribe the lyrics.
+    _stopLoop = true;
+    speechIn.cancel();
+    await device.listenFocus(false);
     tr.updateStep('search', status: StepStatus.running);
     final r = await tr.control.guard(device.playMedia(appKey, q));
     final status = r['status'] as String?;
@@ -1017,12 +1064,19 @@ class JarvisOrchestrator extends ChangeNotifier {
     tr.updateStep('search', status: StepStatus.done);
     if (status == 'playing') {
       final title = r['title'] as String?;
-      tr.updateStep('play', status: StepStatus.done, detail: title == null ? 'Playback started' : 'Playing: $title');
+      final short = _shortTitle(title) ?? q;
+      _lastMediaQuery = short;
+      _lastMediaAt = DateTime.now();
+      tr.updateStep('play', status: StepStatus.done, detail: title == null ? 'Playback confirmed' : 'Playing: $title');
+      await _say('Now playing $short.', kind: 'command'); // verified by the player's media session
       return title == null ? 'Playing' : 'Playing $title';
     }
     tr.updateStep('play', status: StepStatus.skipped, detail: r['reason'] as String?);
-    await _say('I\'ve opened the $appLabel results for $q, but couldn\'t start it automatically. '
-        '${(r['reason'] as String? ?? '').contains('Accessibility') ? 'Turn on the JARVIS accessibility service and I\'ll press play myself next time.' : 'Please tap the first result.'}',
+    final reason = r['reason'] as String? ?? '';
+    await _say(
+        reason.contains('Accessibility')
+            ? 'I\'ve opened the $appLabel results for $q, but couldn\'t start it automatically. Turn on the LEO accessibility service and I\'ll press play myself next time.'
+            : '$reason. ${settings.address}, please tap play.',
         kind: 'command');
     return 'Results opened (not auto-played)';
   }
@@ -1105,7 +1159,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     if (ok != true) {
       tr.updateStep('access', status: StepStatus.failed, detail: 'Notification access is off');
       unawaited(device.openNotificationAccessSettings());
-      throw Exception('I need notification access to read your new messages. I\'ve opened the setting — turn on "JARVIS message reader".');
+      throw Exception('I need notification access to read your new messages. I\'ve opened the setting — turn on "LEO message reader".');
     }
     final items = await tr.step('read', () => device.readNotifications(whatsapp: wa, email: mail)) ?? const [];
     final chats = items.where((i) => i.isWhatsApp).toList();
@@ -1323,11 +1377,11 @@ class JarvisOrchestrator extends ChangeNotifier {
         if (!opened) throw Exception('I couldn\'t open the ${app.displayName} chat.');
         tr.updateStep('send', status: StepStatus.skipped, detail: 'Accessibility is off — chat opened with the message pre-filled');
         tr.updateStep('verify', status: StepStatus.skipped, detail: 'You need to tap Send');
-        await _say('The JARVIS accessibility service is off, so I can\'t press Send myself. I\'ve opened the chat with your message ready, ${settings.address}. Please tap Send.',
+        await _say('The LEO accessibility service is off, so I can\'t press Send myself. I\'ve opened the chat with your message ready, ${settings.address}. Please tap Send.',
             kind: 'command');
         return 'Chat opened with pre-filled message (user must tap Send)';
       }
-      throw Exception('To message a group I need the JARVIS accessibility service. Enable it in Permissions.');
+      throw Exception('To message a group I need the LEO accessibility service. Enable it in Permissions.');
     }
     var result = await device.whatsappSend(packageName: app.packageName, phone: phone, searchName: searchName, message: message);
     if (result.status == WhatsAppSendStatus.ambiguous && result.candidates.isNotEmpty) {

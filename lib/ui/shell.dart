@@ -32,7 +32,7 @@ class _JarvisShellState extends State<JarvisShell> {
         selectedIndex: _tab,
         onDestinationSelected: (i) => setState(() => _tab = i),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.blur_circular), label: 'JARVIS'),
+          NavigationDestination(icon: Icon(Icons.blur_circular), label: 'LEO'),
           NavigationDestination(icon: Icon(Icons.history), label: 'History'),
           NavigationDestination(icon: Icon(Icons.psychology_outlined), label: 'Memory'),
           NavigationDestination(icon: Icon(Icons.insights_outlined), label: 'Analytics'),

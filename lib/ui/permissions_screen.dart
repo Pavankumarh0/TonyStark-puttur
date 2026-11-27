@@ -5,7 +5,7 @@ import 'package:provider/provider.dart';
 import '../device/device_bridge.dart';
 import 'theme.dart';
 
-/// Shows the REAL status of every permission JARVIS depends on, with a direct fix action.
+/// Shows the REAL status of every permission LEO depends on, with a direct fix action.
 class PermissionsScreen extends StatefulWidget {
   const PermissionsScreen({super.key});
 
@@ -77,13 +77,13 @@ class _PermissionsScreenState extends State<PermissionsScreen> with WidgetsBindi
           children: [
             _tile(
               'Microphone',
-              'Wake word and voice commands. Audio is processed on-device until "Jarvis" is detected or you tap the mic.',
+              'Wake word and voice commands. Audio is processed on-device until "Leo" is detected or you tap the mic.',
               _mic?.isGranted,
               () => _request(Permission.microphone),
             ),
             _tile(
               'Notifications',
-              'Required to show the persistent "JARVIS is listening" notification (Android rule for background microphone).',
+              'Required to show the persistent "LEO is listening" notification (Android rule for background microphone).',
               _notif?.isGranted,
               () => _request(Permission.notification),
             ),
@@ -95,18 +95,18 @@ class _PermissionsScreenState extends State<PermissionsScreen> with WidgetsBindi
             ),
             _tile(
               'Default digital assistant',
-              'Make JARVIS your phone assistant: long-press the side key (or swipe up from a bottom corner) to open the half-screen JARVIS panel, like Gemini.',
+              'Make LEO your phone assistant: long-press the side key (or swipe up from a bottom corner) to open the half-screen LEO panel, like Gemini.',
               _assistant,
               d.openAssistantSettings,
               extra: const Text(
-                'Samsung: Settings → Apps → Choose default apps → Digital assistant app → Device assistance app → JARVIS. '
+                'Samsung: Settings → Apps → Choose default apps → Digital assistant app → Device assistance app → LEO. '
                 'Then Settings → Advanced features → Side button → Press and hold → Digital assistant.',
                 style: TextStyle(color: JColors.dim, fontSize: 12),
               ),
             ),
             _tile(
               'Phone calls',
-              'Lets "call Pavan" place the call directly. Without it, JARVIS opens the dialer and you tap call.',
+              'Lets "call Pavan" place the call directly. Without it, LEO opens the dialer and you tap call.',
               _phone?.isGranted,
               () => _request(Permission.phone),
             ),
@@ -122,7 +122,7 @@ class _PermissionsScreenState extends State<PermissionsScreen> with WidgetsBindi
             ),
             _tile(
               'Accessibility service',
-              'Lets JARVIS tap Send in WhatsApp (only after you approve the exact message) and start the YouTube video you asked for. Limited to WhatsApp and YouTube.',
+              'Lets LEO tap Send in WhatsApp (only after you approve the exact message) and start the YouTube video you asked for. Limited to WhatsApp and YouTube.',
               _a11y,
               d.openAccessibilitySettings,
               extra: const _A11yHelp(),
@@ -136,7 +136,7 @@ class _PermissionsScreenState extends State<PermissionsScreen> with WidgetsBindi
                 await _refresh();
               },
               extra: const Text(
-                'Samsung: also open Settings → Battery → Background usage limits and make sure JARVIS is NOT in "Sleeping apps" or "Deep sleeping apps".',
+                'Samsung: also open Settings → Battery → Background usage limits and make sure LEO is NOT in "Sleeping apps" or "Deep sleeping apps".',
                 style: TextStyle(color: JColors.dim, fontSize: 12),
               ),
             ),
@@ -145,9 +145,9 @@ class _PermissionsScreenState extends State<PermissionsScreen> with WidgetsBindi
               child: Padding(
                 padding: EdgeInsets.all(14),
                 child: Text(
-                  'Known limits: the wake word works while the JARVIS listening notification is showing. '
+                  'Known limits: the wake word works while the LEO listening notification is showing. '
                   'It stops if you force-stop the app or swipe it away and Android kills the process, and it does not '
-                  'auto-start after a reboot (Android 15+ blocks microphone services at boot) — open JARVIS once after restarting.',
+                  'auto-start after a reboot (Android 15+ blocks microphone services at boot) — open LEO once after restarting.',
                   style: TextStyle(color: JColors.dim, fontSize: 12, height: 1.5),
                 ),
               ),
@@ -195,7 +195,7 @@ class _A11yHelp extends StatelessWidget {
   Widget build(BuildContext context) => const Text(
         'Sideloaded apps on Android 13+ are "restricted" first:\n'
         '1. Open app info (button below) → ⋮ (top-right) → "Allow restricted settings".\n'
-        '2. Then Accessibility → Installed apps → JARVIS device control → On.',
+        '2. Then Accessibility → Installed apps → LEO device control → On.',
         style: TextStyle(color: JColors.dim, fontSize: 12, height: 1.5),
       );
 }

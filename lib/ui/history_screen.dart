@@ -187,7 +187,7 @@ class _SessionView extends StatelessWidget {
                 child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   SizedBox(
                     width: 64,
-                    child: Text(m.isUser ? 'You' : 'JARVIS', style: TextStyle(color: m.isUser ? JColors.blue : JColors.cyan, fontWeight: FontWeight.w600)),
+                    child: Text(m.isUser ? 'You' : 'LEO', style: TextStyle(color: m.isUser ? JColors.blue : JColors.cyan, fontWeight: FontWeight.w600)),
                   ),
                   Expanded(child: SelectableText(m.text)),
                 ]),

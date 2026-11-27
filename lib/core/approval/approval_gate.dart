@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-/// A sensitive action JARVIS wants to perform, described exactly as it will be executed.
+/// A sensitive action LEO wants to perform, described exactly as it will be executed.
 class ApprovalRequest {
   final String id;
   final String actionType; // e.g. "whatsapp.send", "memory.delete_all"
