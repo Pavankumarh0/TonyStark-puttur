@@ -1,0 +1,16 @@
+name: leo_agent
+description: LEO Desktop agent service — task orchestrator, approvals, audit log and the local IPC server that the desktop UI, the TFT kiosk and the VS Code extension connect to.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  leo_core:
+    path: ../leo_core
+  crypto: ^3.0.6
+  path: ^1.9.1
+
+dev_dependencies:
+  test: ^1.25.0
