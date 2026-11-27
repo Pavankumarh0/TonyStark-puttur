@@ -168,6 +168,10 @@ class DeviceBridge {
 
   /// Finds the unlabelled send button beside/below text box [inputIndex] and taps it. {ok, bounds}
   Future<Map<String, dynamic>> tapSendNear(int inputIndex) => _act('tapSendNear', {'index': inputIndex});
+  /// Taps the [target] button (regex, e.g. 'add to cart') in the card showing [anchor] (e.g. '₹150');
+  /// with tap=false only returns that button's current label (for verification).
+  Future<Map<String, dynamic>> tapBelow(String anchor, String target, {bool tap = true}) =>
+      _act('tapBelow', {'anchor': anchor, 'target': target, 'tap': tap});
 
   /// Is a LEO screen (main app or assistant panel) showing right now?
   Future<bool> uiVisible() async {

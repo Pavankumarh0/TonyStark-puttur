@@ -202,6 +202,7 @@ object DeviceChannel {
             "findFiles" -> background(result) { PhoneExtras.findFiles(call.argument<String>("query") ?: "", call.argument<List<String>>("exts") ?: listOf("pdf")) }
             "openFile" -> result.success(PhoneExtras.openFile(app, call.argument<String>("path")!!))
             "tapSendNear" -> background(result) { ScreenAgent.tapSendNear(call.argument<Int>("index") ?: -1) }
+            "tapBelow" -> background(result) { ScreenAgent.tapBelow(call.argument<String>("anchor") ?: "", call.argument<String>("target") ?: "", call.argument<Boolean>("tap") != false) }
             "screenAct" -> background(result) {
                 ScreenAgent.act(app, call.argument<String>("type") ?: "", call.argument<Int>("index"),
                     call.argument<String>("text"), call.argument<String>("dir"), call.argument<String>("package"))

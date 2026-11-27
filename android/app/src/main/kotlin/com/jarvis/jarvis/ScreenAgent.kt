@@ -167,6 +167,51 @@ object ScreenAgent {
         return mapOf("ok" to ok, "bounds" to bb.toShortString())
     }
 
+    /**
+     * Shopping results: taps the [target] button (e.g. "Add to cart") that belongs to the card showing
+     * [anchor] (e.g. the price "₹150") — the nearest match below the anchor, overlapping it horizontally.
+     * With tap=false it only reports that button's current label (e.g. "1 in cart") for verification.
+     * Reads the app under LEO's panel. Returns {ok, label, reason?}.
+     */
+    fun tapBelow(anchor: String, target: String, tap: Boolean): Map<String, Any?> {
+        val s = svc() ?: return mapOf("ok" to false, "reason" to "accessibility_off")
+        val root = targetRoot(s, true) ?: return mapOf("ok" to false, "reason" to "no_window")
+        if (isBlocked(root.packageName?.toString())) return mapOf("ok" to false, "reason" to "blocked_app")
+        val targetRe = Regex(target, RegexOption.IGNORE_CASE)
+        val norm = { t: String -> t.replace(Regex("[\\s,]"), "") }
+        val want = norm(anchor)
+        val anchors = mutableListOf<Rect>()
+        val targets = mutableListOf<Pair<AccessibilityNodeInfo, Rect>>()
+        val q = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
+        var seen = 0
+        while (q.isNotEmpty() && seen < 5000) {
+            val n = q.removeFirst(); seen++
+            for (i in 0 until n.childCount) n.getChild(i)?.let { q.add(it) }
+            if (!n.isVisibleToUser) continue
+            val label = listOfNotNull(n.text?.toString(), n.contentDescription?.toString()).joinToString(" ").trim()
+            if (label.isEmpty()) continue
+            val r = Rect(); n.getBoundsInScreen(r)
+            if (r.width() <= 0 || r.height() <= 0) continue
+            // The price on its own ("₹150", "₹150.00") — not "M.R.P: ₹1500".
+            if (Regex("^" + Regex.escape(want) + "(\\.\\d+)?$").matches(norm(label))) anchors += r
+            if (targetRe.containsMatchIn(label)) targets += n to r
+        }
+        if (anchors.isEmpty()) return mapOf("ok" to false, "reason" to "anchor_not_found")
+        var best: Pair<AccessibilityNodeInfo, Rect>? = null
+        var bestGap = Int.MAX_VALUE
+        for (a in anchors) for (t in targets) {
+            val gap = t.second.top - a.bottom
+            val overlaps = t.second.right > a.left && t.second.left < a.right + a.width() * 4
+            if (gap >= -a.height() && gap < bestGap && overlaps) { best = t; bestGap = gap }
+        }
+        val (node, rect) = best ?: return mapOf("ok" to false, "reason" to "target_not_found")
+        val label = listOfNotNull(node.text?.toString(), node.contentDescription?.toString()).joinToString(" ").trim()
+        if (!tap) return mapOf("ok" to true, "label" to label)
+        val ok = (clickable(node)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) || tapAt(s, node)
+        android.util.Log.i("LEO", "tapBelow anchor=$anchor target=$label at=${rect.toShortString()} ok=$ok")
+        return mapOf("ok" to ok, "label" to label)
+    }
+
     fun boundsOf(index: Int?): IntArray? {
         val n = index?.let { lastNodes.getOrNull(it) } ?: return null
         n.refresh() // the screen may have moved since the dump (animations/scrolling)

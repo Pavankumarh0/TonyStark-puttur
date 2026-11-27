@@ -97,6 +97,7 @@ Rules:
 7. Sensitive buttons (send, pay, buy, call, delete, post…) are checked with the user automatically when you tap them.
 8. finish_task(status="success") as soon as the latest screen shows the goal is achieved. Describe what was ACTUALLY done.
    A message is SENT when its text appears in the conversation and the text box is empty again — then finish, don't act further.
+   An item is ADDED when its button changes to "1 in cart" / "Added" — then finish, don't tap prices or "Buy".
 9. If stuck after 2 attempts, try back/home once, then finish_task(status="failed") with the reason. Never guess.
 Keep any text you write very short.''';
 
@@ -222,6 +223,11 @@ Keep any text you write very short.''';
     final shown = lines.any((l) => !l.contains('input') && l.contains(probe));
     return shown && !inBox;
   }
+
+  /// After tapping "Add to cart": does the screen now show the item in the cart?
+  bool _looksAddedToCart() => RegExp(r'\b\d+ in (cart|basket|bag)\b|added to (your )?(cart|basket|bag)|item added|go to (cart|basket|bag)',
+          caseSensitive: false)
+      .hasMatch(_screen ?? '');
 
   String? _labelOf(int index) {
     final line = (_screen ?? '').split('\n').firstWhere((l) => l.startsWith('[$index]'), orElse: () => '');
@@ -366,6 +372,11 @@ class _ActTool extends AgentTool {
     if (ok && sensitive && typedText != null && a._looksSent(typedText)) { // both masked the same way
       a._finish = (status: 'success', message: 'Sent "$typedText".');
       return ToolResult('Sent — confirmed on screen.', stop: true);
+    }
+    // "Add to cart" is confirmed by code too, so the model doesn't wander onto "Buy" buttons afterwards.
+    if (ok && action == 'tap' && RegExp(r'add to (cart|basket|bag)', caseSensitive: false).hasMatch(label ?? '') && a._looksAddedToCart()) {
+      a._finish = (status: 'success', message: 'Added it to the cart (shown on screen). Nothing was bought.');
+      return ToolResult('Added to cart — confirmed on screen.', stop: true);
     }
     final head = ok ? '$describe → done.' : '$describe → FAILED (${r['reason'] ?? 'unknown'}). Try something else.';
     return ToolResult(scr == null ? head : '$head\n$scr', isError: !ok);

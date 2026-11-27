@@ -2113,11 +2113,20 @@ class JarvisOrchestrator extends ChangeNotifier {
     final searched = await _agentFor(tr, 'open $store and search for $q');
     if (tr.control.isAborted) return searched;
     await Future<void>.delayed(const Duration(seconds: 3));
-    final txt = await device.screenText();
-    final lines = ((txt['lines'] as List?) ?? const []).cast<String>();
-    final products = parseProducts(lines);
+    // The first screen is often ads / a sponsored video with no prices: scroll a little to reach them.
+    var products = parseProducts(((await device.screenText(skipOwn: true))['lines'] as List? ?? const []).cast<String>());
+    for (var s = 0; s < 2 && products.isEmpty && !tr.control.isAborted; s++) {
+      await device.screenAct('scroll', dir: 'down');
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      products = parseProducts(((await device.screenText(skipOwn: true))['lines'] as List? ?? const []).cast<String>());
+    }
     tr.addStep(TaskStep(id: 'compare', description: 'Compare results on screen', status: StepStatus.done, detail: '${products.length} products with prices'));
     if (products.isEmpty) {
+      if (p['cart'] == true) {
+        // Couldn't read prices — let the screen agent pick a result and add it (it never buys: "Buy" needs approval).
+        return _agentFor(tr, 'On the $store search results for "$q", open one $q product and tap "Add to cart". Do not buy. '
+            'Finish with success only when the screen shows it was added to the cart.');
+      }
       await _say('I searched $store for $q, but couldn\'t read product prices on this screen, $a.');
       return 'No prices found';
     }
@@ -2128,32 +2137,49 @@ class JarvisOrchestrator extends ChangeNotifier {
     final i = await _askChoice('Which one should I add to the cart?',
         [for (final x in products.take(5)) x.short], details: [for (final x in products.take(5)) x.priceText], tr: tr);
     final chosen = products[i];
-    // Open the product
-    var dump = await device.screenDump();
-    final idx = _findElement(dump['screen'] as String? ?? '', chosen.title.substring(0, chosen.title.length.clamp(0, 30)));
-    if (idx == null) throw Exception('I couldn\'t find that product on screen anymore.');
-    tr.addStep(TaskStep(id: 'open', description: 'Open "${chosen.short}"', status: StepStatus.done));
-    await device.screenAct('tap', index: idx);
-    await Future<void>.delayed(const Duration(seconds: 3));
-    // Find "Add to cart" (scroll a little if needed)
-    int? addIdx;
-    for (var tries = 0; tries < 4 && addIdx == null; tries++) {
-      dump = await device.screenDump();
-      addIdx = _findElement(dump['screen'] as String? ?? '', 'add to cart');
-      if (addIdx == null) await device.screenAct('scroll', dir: 'down');
+    // The panel can hide the shopping app from accessibility: step aside before touching it.
+    if (assistMode) {
+      await device.closeAssist();
+      await Future<void>.delayed(const Duration(milliseconds: 900));
     }
-    if (addIdx == null) throw Exception('I opened the product, but couldn\'t find an "Add to cart" button.');
-    tr.addStep(TaskStep(id: 'cart', description: 'Tap "Add to cart"'));
-    tr.updateStep('cart', status: StepStatus.running);
-    await device.screenAct('tap', index: addIdx);
-    await Future<void>.delayed(const Duration(seconds: 2));
-    final after = ((await device.screenText())['lines'] as List? ?? const []).cast<String>().join(' ').toLowerCase();
-    final added = after.contains('added to cart') || after.contains('go to cart') || after.contains('added to your cart') || after.contains('item added');
-    tr.updateStep('cart', status: added ? StepStatus.done : StepStatus.failed, detail: added ? 'Confirmed on screen' : 'Could not confirm');
-    await _say(added
-        ? 'Added ${chosen.short} to your $store cart, $a. I haven\'t bought anything.'
-        : 'I tapped "Add to cart", $a, but couldn\'t confirm it on screen — please check.', kind: 'command');
-    return added ? 'Added to cart' : 'Unconfirmed';
+    // Deterministic first: tap the "Add to cart" in the card that shows the chosen price, then check
+    // that SAME card now says "in cart". (Asking the model picked the wrong card once on Amazon.)
+    const addBtn = r'add to (cart|basket|bag)';
+    tr.addStep(TaskStep(id: 'cart', description: 'Tap "Add to cart" for ${chosen.short} (${chosen.priceText})', status: StepStatus.running));
+    var tap = await device.tapBelow(chosen.priceText, addBtn);
+    if (tap['reason'] == 'anchor_not_found') {
+      await device.screenAct('scroll', dir: 'up'); // it may have scrolled just out of view
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+      tap = await device.tapBelow(chosen.priceText, addBtn);
+    }
+    if (tap['ok'] == true) {
+      await Future<void>.delayed(const Duration(milliseconds: 2200));
+      final v = await device.tapBelow(chosen.priceText, r'in (cart|basket|bag)|added|' + addBtn, tap: false);
+      final added = RegExp(r'in (cart|basket|bag)|added', caseSensitive: false).hasMatch('${v['label'] ?? ''}');
+      tr.updateStep('cart', status: added ? StepStatus.done : StepStatus.failed, detail: added ? 'Card now shows "${v['label']}"' : 'Could not confirm');
+      await _say(added
+          ? 'Added ${chosen.short} at ${chosen.priceText} to your $store cart, $a. I haven\'t bought anything.'
+          : 'I tapped "Add to cart" for ${chosen.short}, $a, but couldn\'t confirm it on screen — please check.', kind: 'command');
+      return added ? 'Added to cart' : 'Unconfirmed';
+    }
+    tr.updateStep('cart', status: StepStatus.failed, detail: '${tap['reason'] ?? 'not found'} — handing to the agent');
+    // Fallback (e.g. the card has no "Add to cart"): the screen agent, which must SEE it added before it
+    // may report success. "Buy now" / "Place order" stay sensitive and are never pressed silently.
+    return _agentFor(
+        tr,
+        'On the $store search results for "$q", tap the "Add to cart" button of the product priced ${chosen.priceText} '
+        '(described as "${chosen.short}"). If that card has no "Add to cart", open the product and tap "Add to cart" there. '
+        'Do not buy anything. Finish with success only when the screen shows it was added '
+        '(e.g. a quantity stepper, "Added to cart", or the cart count going up).');
+  }
+
+  /// Number on the shopping app's cart badge, read from a screen dump ("Cart 3 items", "3 items in cart"), or null.
+  static int? cartCount(String screen) {
+    for (final line in screen.split('\n')) {
+      final m = RegExp(r'cart\D{0,12}?(\d{1,3})\b|(\d{1,3})\s+items? in (?:your )?cart', caseSensitive: false).firstMatch(line);
+      if (m != null) return int.tryParse(m.group(1) ?? m.group(2)!);
+    }
+    return null;
   }
 
   static List<({String title, String short, int price, String priceText})> parseProducts(List<String> lines) {
@@ -2162,17 +2188,27 @@ class JarvisOrchestrator extends ChangeNotifier {
     for (var i = 0; i < lines.length; i++) {
       final m = priceRe.firstMatch(lines[i]);
       if (m == null) continue;
+      // "M.R.P: ₹999" / "Buy for ₹288 with coupon" are not the selling price.
+      if (RegExp(r'm\.?r\.?p|buy for|coupon|% off|save ₹', caseSensitive: false).hasMatch(lines[i])) continue;
       String? title;
       for (var j = i - 1; j >= 0 && j >= i - 6; j--) {
         final l = lines[j];
         if (priceRe.hasMatch(l)) break; // crossed into the previous product (or this one's MRP)
         // Product titles are long; skip filter chips / guides like "ANC vs transparency mode", "Best earbuds for iPhone".
         final chip = RegExp(r'(\bvs\.?\b|^best\b|^top\b|\bguide\b|\?$|^shop\b|^see\b|^explore\b)', caseSensitive: false).hasMatch(l);
-        if (l.length >= 25 && !chip && !RegExp(r'(sponsored|^ad\b|rating|stars|delivery|bought|offer|ends in)', caseSensitive: false).hasMatch(l)) {
+        if (l.length >= 25 && !chip && !RegExp(r'(sponsored|^ad\b|rating|stars|delivery|bought|offer|ends in|heart to save|wish ?list|your list|feedback)', caseSensitive: false).hasMatch(l)) {
           title = l;
+          // A long line just above is the real title (this one is its subtitle, e.g. "Charging Cables, 2-in-1…").
+          if (j > 0 && lines[j - 1].length >= 25 && !priceRe.hasMatch(lines[j - 1]) &&
+              !RegExp(r'(sponsored|^ad\b|rating|stars|delivery|bought|offer|ends in|heart to save|wish ?list|your list|feedback|\bvs\.?\b|^best\b)', caseSensitive: false).hasMatch(lines[j - 1])) {
+            title = lines[j - 1];
+          }
           break;
         }
       }
+      // Some apps (Amazon) don't expose the product title as text: keep a bare price line as "result N"
+      // (unless it directly follows another price — that's the struck-out list price).
+      if (title == null && (i == 0 || !priceRe.hasMatch(lines[i - 1])) && RegExp(r'^₹\s?[\d,]+(\.\d+)?$').hasMatch(lines[i].trim())) title = 'result ${out.length + 1}';
       if (title == null || out.any((x) => x.title == title)) continue;
       final price = int.tryParse(m.group(1)!.replaceAll(',', '')) ?? 0;
       if (price <= 0) continue;

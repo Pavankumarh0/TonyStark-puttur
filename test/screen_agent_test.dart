@@ -211,4 +211,20 @@ void main() {
     expect(seen, contains('<PHONE_1>'));
     expect(phone.acts, contains('type [1] "9845012345"'));
   });
+
+  test('add to cart is confirmed by code and the agent stops (no wandering onto Buy)', () async {
+    const results = '[0] Text "₹293.50 Buy for ₹288 with coupon" (tap)\n[1] Button "Add to cart" (tap)';
+    const added = '[0] Text "₹293.50 Buy for ₹288 with coupon" (tap)\n[1] Button "1 in cart" (tap)';
+    final phone = FakePhone([results, added]);
+    final brain = ScriptedBrain([
+      [('get_screen', {})],
+      [('act', {'action': 'tap', 'index': 1})],
+      [('act', {'action': 'tap', 'index': 0})], // must never be reached
+    ]);
+    final r = await ScreenAgent(device: phone, apps: AppResolver(phone), brain: brain, apiKey: 'k', model: 'm', hooks: hooks()).run('add to cart');
+    expect(r.status, 'success');
+    expect(brain.turn, 2);
+    expect(phone.acts, ['tap [1]']);
+  });
 }
+
