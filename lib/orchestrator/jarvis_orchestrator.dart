@@ -579,6 +579,8 @@ class JarvisOrchestrator extends ChangeNotifier {
         _startTask('Shop: $query on $store', 'shop', TaskRoute.local, {'query': query, 'store': store, 'cart': addToCart});
       case ScreenCommandIntent(:final command, :final arg):
         _startTask('Screen: ${command.name}${arg == null ? '' : ' "$arg"'}', 'screen_cmd', TaskRoute.local, {'cmd': command.name, 'arg': arg});
+      case AskAppIntent(:final prompt, :final app):
+        _startTask('Ask ${app ?? 'the app'}: $prompt', 'ask_app', TaskRoute.local, {'prompt': prompt, 'app': app});
       case ReadChatIntent(:final who):
         _startTask('Read chat with $who', 'read_chat', TaskRoute.local, {'who': who});
       case SignInIntent(:final appName, :final method):
@@ -624,7 +626,7 @@ class JarvisOrchestrator extends ChangeNotifier {
         NavigateIntent() || WebSearchIntent() || FlashlightIntent() || CameraIntent() || SettingsPanelIntent() ||
         SignInIntent() || ReplyIntent() || DismissAlarmIntent() || SnoozeAlarmIntent() || ListRemindersIntent() ||
         DeleteReminderIntent() || CallControlIntent() || FindFileIntent() || OpenWebsiteIntent() || InstallAppIntent() ||
-        ShopIntent() || ScreenCommandIntent() || ReadChatIntent() => 'command',
+        ShopIntent() || ScreenCommandIntent() || ReadChatIntent() || AskAppIntent() => 'command',
         PhoneTaskIntent() => 'agent',
         KnowledgeIntent() => 'knowledge',
         WriteIntent() => 'write',
@@ -1009,6 +1011,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     'shop': _runShop,
     'screen_cmd': _runScreenCommand,
     'read_chat': _runReadChat,
+    'ask_app': _runAskApp,
   };
 
   static const _kindToLabel = {
@@ -2145,6 +2148,84 @@ class JarvisOrchestrator extends ChangeNotifier {
     return 'Done';
   }
 
+  /// Apps where typing + sending reaches a PERSON. These keep the WhatsApp-style flow (exact message + approval).
+  static final _messagingPkgs = RegExp(
+      r'^(com\.whatsapp(\.w4b)?|org\.telegram\..*|com\.instagram\.android|com\.facebook\.orca|com\.google\.android\.apps\.messaging|'
+      r'com\.samsung\.android\.messaging|com\.google\.android\.gm|com\.microsoft\.teams|com\.slack|com\.discord|com\.snapchat\.android|'
+      r'com\.linkedin\.android|com\.twitter\.android|org\.thoughtcrime\.securesms)$');
+
+  /// "ask it to prepare a PPT about blood": type the request into the app's message box and send it.
+  Future<String?> _runAskApp(TaskTracker tr) async {
+    final a = settings.address;
+    final prompt = tr.snapshot.params['prompt'] as String;
+    final appName = tr.snapshot.params['app'] as String?;
+    if (!await device.accessibilityEnabled()) {
+      throw Exception('I need the LEO accessibility service to type into apps. Turn it on in Permissions.');
+    }
+    if (appName != null) {
+      final found = await apps.resolve(appName);
+      if (found.isEmpty) throw Exception('$appName isn\'t installed.');
+      tr.addStep(TaskStep(id: 'open', description: 'Open ${found.first.label}'));
+      await tr.step('open', () => device.launchApp(found.first.packageName));
+      await Future<void>.delayed(const Duration(milliseconds: 2500));
+    } else if (assistMode) {
+      await device.closeAssist();
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+    }
+    Map<String, dynamic> dump = await device.screenDump(max: 60, skipOwn: true);
+    final pkg = dump['package'] as String? ?? '';
+    final label = (await apps.apps()).where((x) => x.packageName == pkg).map((x) => x.label).firstOrNull ?? 'the app';
+    if (_messagingPkgs.hasMatch(pkg)) {
+      // WhatsApp & co. keep the old mechanism: exact message, named recipient, your approval.
+      await _say('$label sends to people, $a, so I won\'t type there directly. Say "send a message to …" and I\'ll show you the exact message first.');
+      return 'Messaging app — not typed';
+    }
+    if (dump['ok'] != true) throw Exception('I can\'t read $label\'s screen (${dump['reason']}).');
+    String screen() => dump['screen'] as String? ?? '';
+    // The message box: an input field (prefer the lowest on screen = chat composer).
+    int? findInput() {
+      int? idx;
+      for (final l in screen().split('\n')) {
+        final m = RegExp(r'^\[(\d+)\]\s+\S+\s+"(.*)"\s+\((.*)\)$').firstMatch(l.trim());
+        if (m != null && m.group(3)!.contains('input')) idx = int.parse(m.group(1)!);
+      }
+      return idx;
+    }
+    var input = findInput();
+    if (input == null) {
+      // Some apps show a "Message"/"Ask" button before the field appears.
+      final starter = _findElement(screen(), 'message ask chat type reply prompt');
+      if (starter != null) {
+        await device.screenAct('tap', index: starter);
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+        dump = await device.screenDump(max: 60, skipOwn: true);
+        input = findInput();
+      }
+    }
+    if (input == null) throw Exception('I couldn\'t find where to type in $label.');
+    tr.addStep(TaskStep(id: 'type', description: 'Type: "$prompt"'));
+    final typed = await tr.step('type', () => device.screenAct('type', index: input, text: prompt));
+    if (typed?['ok'] != true) throw Exception('I couldn\'t type into $label (${typed?['reason']}).');
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    // Press send: a Send/Submit button, else the keyboard's enter.
+    dump = await device.screenDump(max: 60, skipOwn: true);
+    int? send;
+    for (final l in screen().split('\n')) {
+      final m = RegExp(r'^\[(\d+)\]\s+\S+\s+"(.*)"\s+\((.*)\)$').firstMatch(l.trim());
+      if (m == null || !m.group(3)!.contains('tap')) continue;
+      if (RegExp(r'^(send|send message|submit|send prompt|ask)\b', caseSensitive: false).hasMatch(m.group(2)!.split(' | ').first.trim())) {
+        send = int.parse(m.group(1)!);
+      }
+    }
+    tr.addStep(const TaskStep(id: 'send', description: 'Send it'));
+    final sent = await tr.step('send', () => send != null ? device.screenAct('tap', index: send) : device.screenAct('submit', index: input));
+    if (sent?['ok'] != true) throw Exception('I typed it, but couldn\'t press send in $label — please tap send.');
+    await _say(_loopRunning
+        ? 'Asked $label: ${prompt[0].toLowerCase()}${prompt.substring(1)}. Say "read this" when you want the answer read out. What next, $a?'
+        : 'Asked $label, $a.', kind: 'command');
+    return 'Sent to $label';
+  }
+
   Future<String?> _runReadChat(TaskTracker tr) async {
     final a = settings.address;
     final who = tr.snapshot.params['who'] as String;
@@ -2500,7 +2581,8 @@ class JarvisOrchestrator extends ChangeNotifier {
       if (!ok) throw Exception('Android did not allow $label to be launched.');
       return ok;
     }, doneDetail: 'Launch intent accepted by Android');
-    await _say('$label is open, ${settings.address}.', kind: 'command');
+    // Mid-conversation: keep going ("open Claude" → "What next, sir?").
+    await _say(_loopRunning ? '$label is open, ${settings.address}. What next?' : '$label is open, ${settings.address}.', kind: 'command');
     await _offerLogin(tr, pkg, label!);
     return '$label launched';
   }

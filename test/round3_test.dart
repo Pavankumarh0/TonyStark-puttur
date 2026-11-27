@@ -189,4 +189,17 @@ void main() {
   test('"Hello, can you send … saying hi in WhatsApp?" is a local WhatsApp send', () =>
       expect(e.parse('Hello, can you send a message to Yadava saying hi in WhatsApp?'), isA<SendMessageIntent>()));
   test('dictated question keeps its ?', () => expect(e.parse('message Rahul saying are you coming?'), isA<SendMessageIntent>()));
+
+  group('Ask the app on screen', () {
+    test('ask it to prepare a ppt about blood', () {
+      final i = e.parse('ask it to prepare a ppt about blood') as AskAppIntent;
+      expect(i.prompt, 'Prepare a ppt about blood');
+      expect(i.app, isNull);
+    });
+    test('ask Claude to write a poem', () => expect((e.parse('ask Claude to write a poem on rain') as AskAppIntent).app, 'Claude'));
+    test('tell chatgpt …', () => expect(e.parse('tell chatgpt to summarise the news'), isA<AskAppIntent>()));
+    test('WhatsApp messages keep the old path', () => expect(e.parse('send a message to Rahul saying hi on whatsapp'), isA<SendMessageIntent>()));
+    test('asking a person is not this', () => expect(e.parse('ask Rahul if he is coming'), isNot(isA<AskAppIntent>())));
+    test('open my resume pdf still a file', () => expect(e.parse('open my resume pdf'), isA<FindFileIntent>()));
+  });
 }

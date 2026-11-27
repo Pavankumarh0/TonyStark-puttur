@@ -338,6 +338,14 @@ class ScreenCommandIntent extends LocalIntent {
 }
 
 /// "read my chat with Rahul" — open the WhatsApp chat and read the latest messages aloud.
+/// "ask it to prepare a PPT about blood" / "ask Claude to …" / "tell ChatGPT …": type the request into
+/// the app on screen (or the named AI app) and send it. Never used for messaging apps.
+class AskAppIntent extends LocalIntent {
+  final String prompt;
+  final String? app; // null = the app on screen
+  const AskAppIntent(this.prompt, {this.app});
+}
+
 class ReadChatIntent extends LocalIntent {
   final String who;
   const ReadChatIntent(this.who);

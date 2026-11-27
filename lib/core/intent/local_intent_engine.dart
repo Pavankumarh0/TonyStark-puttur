@@ -289,7 +289,20 @@ class LocalIntentEngine {
   }
 
   // ---------------------------------------------------------------- files / web / install / shopping / chat reading
+  /// AI / chat apps LEO may type a request into ("ask Claude to …").
+  static const askableApps = r"claude|chat ?gpt|gemini|perplexity|copilot|meta ai|grok|deepseek|le chat|mistral|poe|pi";
+
   LocalIntent? _round3(String text, String n) {
+    // "ask it to prepare a PPT about blood", "tell Claude to …", "ask ChatGPT what is …"
+    final ask = RegExp("^(?:ask|tell|prompt)\\s+(it|this|that|the app|$askableApps)\\s+(?:to\\s+|for\\s+|about\\s+|that\\s+)?(.+)\$",
+            caseSensitive: false)
+        .firstMatch(text);
+    if (ask != null) {
+      final target = ask.group(1)!.toLowerCase();
+      final app = RegExp(r'^(it|this|that|the app)$').hasMatch(target) ? null : _cap(target);
+      final p = ask.group(2)!.trim();
+      return AskAppIntent('${p[0].toUpperCase()}${p.substring(1)}', app: app);
+    }
     // Read a WhatsApp chat aloud
     final rc = RegExp(r"^(?:read|read out|read me)\s+(?:my\s+|the\s+)?(?:latest\s+|last\s+|recent\s+)?(?:whatsapp\s+)?(?:chat|messages|conversation)\s+(?:with|from)\s+(.+?)(?:\s+(?:on|in)\s+whatsapp)?$", caseSensitive: false)
         .firstMatch(text);
