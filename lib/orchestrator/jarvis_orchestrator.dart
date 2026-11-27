@@ -23,8 +23,10 @@ import '../data/memory_repository.dart';
 import '../data/settings_store.dart';
 import '../device/app_resolver.dart';
 import '../device/device_bridge.dart';
+import '../voice/language.dart';
 import '../voice/mic_engine.dart';
 import '../voice/speech_input.dart';
+import '../voice/sarvam_client.dart';
 import '../voice/speech_output.dart';
 
 enum VoicePhase { idle, listening, transcribing }
@@ -104,6 +106,12 @@ class JarvisOrchestrator extends ChangeNotifier {
   Draft? draft;
   String? banner;
   String? lastHeard;
+
+  /// Language LEO replies in: the language of the last thing the user said (detected by Sarvam)
+  /// or typed (from its script). Command handling always works on English.
+  String replyLanguage = Lang.english;
+  late final ReplyTranslator translator = ReplyTranslator(SarvamClient(), () => settings.secret(SecretKey.sarvam));
+  String? _typedOriginal; // what the user typed in Kannada/Hindi, shown in the chat instead of its translation
   bool listeningEnabled = false;
   bool serviceRunning = false;
   bool get speaking => speechOut.speaking;
@@ -392,6 +400,7 @@ class JarvisOrchestrator extends ChangeNotifier {
         },
       );
       lastHeard = text;
+      if (text != null) replyLanguage = speechIn.lastLanguage;
       return text;
     } finally {
       voice = VoicePhase.idle;
@@ -411,6 +420,17 @@ class JarvisOrchestrator extends ChangeNotifier {
     final t = text.trim();
     if (t.isEmpty) return;
     if (speechOut.speaking) await speechOut.stop();
+    // Typed in Kannada or Hindi script → understood via English, answered in that language.
+    final script = settings.mixedLanguage ? Lang.ofScript(t) : null;
+    replyLanguage = script ?? Lang.english;
+    if (script != null) {
+      final en = await translator.toEnglish(t, script);
+      if (en != null && en.isNotEmpty) {
+        _typedOriginal = t;
+        await handleInput(en, source: 'text');
+        return;
+      }
+    }
     await handleInput(t, source: 'text');
   }
 
@@ -2680,12 +2700,27 @@ class JarvisOrchestrator extends ChangeNotifier {
     return out.take(12).toList();
   }
 
+  /// "Call mother" (how Kannada/Hindi speech arrives after translation) → the contact saved as
+  /// Amma / Mummy / Maa. Only whole-word matches count ("Amma", "Amma Home" — not "Kammar").
+  Future<List<ContactMatch>> _relationContacts(String name) async {
+    for (final alias in Lang.relationAliases(name)) {
+      final hits = (await device.searchContacts(alias)).where((c) => nameHasWord(c.name, alias)).toList();
+      if (hits.isNotEmpty) return hits;
+    }
+    return const [];
+  }
+
+  static bool nameHasWord(String contactName, String word) =>
+      RegExp('(^|[^a-z])${RegExp.escape(word.toLowerCase())}(\$|[^a-z])').hasMatch(contactName.toLowerCase());
+
   Future<List<ContactMatch>> _findContacts(TaskTracker tr, String name) async {
     var st = await Permission.contacts.status;
     if (!st.isGranted) st = await Permission.contacts.request();
     if (!st.isGranted) throw Exception('I need Contacts permission to find $name.');
     final exact = await device.searchContacts(name);
     if (exact.isNotEmpty) return exact;
+    final relation = await _relationContacts(name);
+    if (relation.isNotEmpty) return relation;
     // Speech-to-text spells Indian names differently from how they're saved: Pawan/Pavan, Shreya/Sreya…
     for (final v in spellingVariants(name)) {
       final hit = await device.searchContacts(v);
@@ -3028,6 +3063,7 @@ class JarvisOrchestrator extends ChangeNotifier {
         var st = await Permission.contacts.status;
         if (!st.isGranted) st = await Permission.contacts.request();
         if (st.isGranted) contacts = await tr.control.guard(device.searchContacts(recipientQuery));
+        if (st.isGranted && contacts.isEmpty) contacts = await tr.control.guard(_relationContacts(recipientQuery));
         final exact = contacts.where((c) => c.name.toLowerCase() == recipientQuery.toLowerCase()).toList();
         var pool = exact.isNotEmpty ? exact : contacts;
         final wa = pool.where((c) => c.hasWhatsApp).toList();
@@ -3459,6 +3495,10 @@ class JarvisOrchestrator extends ChangeNotifier {
   }
 
   Future<void> _store(String role, String text, {String? source, String? route, String? kind}) async {
+    if (role == 'user' && _typedOriginal != null) {
+      text = _typedOriginal!;
+      _typedOriginal = null;
+    }
     final m = await memory.addMessage(sessionId: sessionId, role: role, text: text, source: source, route: route, kind: kind);
     messages = [...messages, m];
     notifyListeners();
@@ -3473,9 +3513,17 @@ class JarvisOrchestrator extends ChangeNotifier {
 
   Future<void> _say(String text,
       {bool store = true, String route = 'local', String? kind, String extraStoredText = '', bool private = false}) async {
-    if (store) await _store('jarvis', '$text$extraStoredText', route: route, kind: kind);
+    final isPrivate = private || isPrivateSpeech(text, kind);
+    // Reply in the language the user spoke. Private content set to stay on the phone is never
+    // sent for translation (it is spoken in English by the phone's own voice).
+    var shown = text;
+    final lang = replyLanguage;
+    if (lang != Lang.english && settings.replyInMyLanguage && !(isPrivate && settings.privateVoice)) {
+      shown = await translator.toLanguage(text, lang);
+    }
+    if (store) await _store('jarvis', '$shown$extraStoredText', route: route, kind: kind);
     if (settings.speakResponses) {
-      await speechOut.speak(text, private: private || isPrivateSpeech(text, kind));
+      await speechOut.speak(shown, private: isPrivate, languageCode: identical(shown, text) ? Lang.english : lang);
       if (speechOut.lastError != null && speechOut.lastEngine == 'device') {
         banner ??= speechOut.lastError;
       }

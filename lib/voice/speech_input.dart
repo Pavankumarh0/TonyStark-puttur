@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../data/memory_repository.dart';
 import '../data/settings_store.dart';
+import 'language.dart';
 import 'mic_engine.dart';
 import 'sarvam_client.dart';
 import 'wav.dart';
@@ -25,6 +26,11 @@ class SpeechInput {
 
   SpeechInput(this.mic, this.sarvam, this.settings, this.memory);
 
+  /// Language of the conversation, from the last utterance (en-IN, hi-IN or kn-IN).
+  String lastLanguage = Lang.english;
+  String? lastDetected;
+  double? lastProbability;
+
   bool get isConfigured => settings.hasSecret(SecretKey.sarvam);
 
   /// Returns the transcript, or null when nobody spoke.
@@ -41,17 +47,22 @@ class SpeechInput {
     onSpeechCaptured?.call();
     final seconds = samples.length / MicEngine.sampleRate;
     try {
-      final text = await sarvam.transcribe(
+      final r = await sarvam.transcribeDetailed(
         apiKey: key,
         wav: encodeWav(samples, sampleRate: MicEngine.sampleRate),
         model: settings.sarvamSttModel,
-        // Mixed-language mode: Hindi/Kannada/code-mixed speech is translated to English text.
+        // Mixed-language mode: Hindi/Kannada/code-mixed speech is translated to English text, so all of
+        // LEO's command handling works unchanged — and Sarvam tells us which language was spoken.
         languageCode: settings.mixedLanguage ? 'unknown' : 'en-IN',
         mode: settings.mixedLanguage ? 'translate' : 'transcribe',
         keyterms: keyterms.toList(),
       );
       unawaited(memory.logVoiceUsage('stt', seconds, true));
-      return text.isEmpty ? null : text;
+      if (r.text.isEmpty) return null;
+      lastDetected = r.languageCode;
+      lastProbability = r.probability;
+      lastLanguage = settings.mixedLanguage ? Lang.pick(r.languageCode, r.probability, previous: lastLanguage) : Lang.english;
+      return r.text;
     } catch (e) {
       unawaited(memory.logVoiceUsage('stt', seconds, false));
       rethrow;

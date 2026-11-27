@@ -110,6 +110,10 @@ class SettingsStore extends ChangeNotifier {
   bool get mixedLanguage => _prefs.getBool('mixed_language') ?? true;
   set mixedLanguage(bool v) => _setB('mixed_language', v);
 
+  /// Answer in the language the user spoke (Kannada, Hindi, mixed). Off = always English.
+  bool get replyInMyLanguage => _prefs.getBool('reply_in_my_language') ?? true;
+  set replyInMyLanguage(bool v) => _setB('reply_in_my_language', v);
+
   bool get listeningEnabled => _prefs.getBool('listening_enabled') ?? false;
   set listeningEnabled(bool v) => _setB('listening_enabled', v);
 

@@ -12,6 +12,13 @@ class SarvamException implements Exception {
   String toString() => status == null ? message : '$message (HTTP $status)';
 }
 
+class SttResult {
+  final String text;
+  final String? languageCode; // e.g. kn-IN, hi-IN, en-IN (null if not detected)
+  final double? probability;
+  const SttResult(this.text, this.languageCode, this.probability);
+}
+
 /// Sarvam AI REST client: Saaras (speech-to-text) and Bulbul (text-to-speech).
 /// Only receives audio AFTER the offline wake word fired or the user tapped the mic.
 class SarvamClient {
@@ -24,6 +31,19 @@ class SarvamClient {
   }
 
   Future<String> transcribe({
+    required String apiKey,
+    required Uint8List wav,
+    String model = 'saaras:v4',
+    String languageCode = 'en-IN',
+    String mode = 'transcribe',
+    List<String> keyterms = const [],
+  }) async =>
+      (await transcribeDetailed(apiKey: apiKey, wav: wav, model: model, languageCode: languageCode, mode: mode, keyterms: keyterms))
+          .text;
+
+  /// Speech-to-text with the language Sarvam detected (when [languageCode] is 'unknown').
+  /// In 'translate' mode [SttResult.text] is English, whatever language was spoken.
+  Future<SttResult> transcribeDetailed({
     required String apiKey,
     required Uint8List wav,
     String model = 'saaras:v4',
@@ -50,7 +70,44 @@ class SarvamClient {
     }
     final j = _json(res.body);
     if (res.statusCode != 200) throw SarvamException(_err(j) ?? 'Speech-to-text failed', status: res.statusCode);
-    return ((j?['transcript'] as String?) ?? '').trim();
+    return SttResult(
+      ((j?['transcript'] as String?) ?? '').trim(),
+      j?['language_code'] as String?,
+      (j?['language_probability'] as num?)?.toDouble(),
+    );
+  }
+
+  /// Text translation (Mayura). 'modern-colloquial' gives everyday, code-mixed replies
+  /// ("Sir, ನಾನು 6 AM-ಗೆ alarm set ಮಾಡಿದ್ದೀನಿ") — how people actually talk.
+  Future<String> translate({
+    required String apiKey,
+    required String text,
+    required String source,
+    required String target,
+    String model = 'mayura:v1',
+    String mode = 'modern-colloquial',
+  }) async {
+    final http.Response res;
+    try {
+      res = await _client
+          .post(Uri.parse('$_base/translate'),
+              headers: {'api-subscription-key': apiKey, 'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'input': text,
+                'source_language_code': source,
+                'target_language_code': target,
+                'model': model,
+                'mode': mode,
+              }))
+          .timeout(const Duration(seconds: 15));
+    } on TimeoutException {
+      throw SarvamException('Sarvam translation timed out');
+    } on http.ClientException catch (e) {
+      throw SarvamException('Network error talking to Sarvam: ${e.message}');
+    }
+    final j = _json(res.body);
+    if (res.statusCode != 200) throw SarvamException(_err(j) ?? 'Translation failed', status: res.statusCode);
+    return ((j?['translated_text'] as String?) ?? '').trim();
   }
 
   Future<Uint8List> synthesize({
@@ -64,6 +121,7 @@ class SarvamClient {
     final body = {
       'text': text.length > 2500 ? text.substring(0, 2500) : text,
       'language_code': languageCode,
+      'target_language_code': languageCode, // Bulbul's documented field; both are accepted
       'model': model,
       'speaker': speaker,
       'pace': pace.clamp(0.5, 2.0),

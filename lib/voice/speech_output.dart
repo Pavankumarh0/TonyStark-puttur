@@ -41,7 +41,8 @@ class SpeechOutput extends ChangeNotifier {
   /// Speaks [text]; completes when finished or when [stop] is called.
   /// [private] text (messages, chats, OTPs, screen contents) is spoken with the phone's own voice only —
   /// it is never sent to a cloud voice service.
-  Future<void> speak(String text, {bool private = false}) async {
+  /// [languageCode] (en-IN, hi-IN, kn-IN) picks the voice's language — LEO answers in the language you spoke.
+  Future<void> speak(String text, {bool private = false, String languageCode = 'en-IN'}) async {
     final clean = _speakable(text);
     if (clean.isEmpty) return;
     final gen = ++_generation;
@@ -51,7 +52,7 @@ class SpeechOutput extends ChangeNotifier {
       final keepLocal = private && settings.privateVoice;
       if (!keepLocal && !settings.useDeviceTts && key != null && key.isNotEmpty) {
         try {
-          await _speakSarvam(clean, key, gen);
+          await _speakSarvam(clean, key, gen, languageCode);
           lastEngine = 'sarvam';
           lastError = null;
           return;
@@ -62,13 +63,21 @@ class SpeechOutput extends ChangeNotifier {
       }
       if (gen != _generation) return;
       lastEngine = 'device';
+      if (languageCode != _deviceLang) {
+        // Fall back to English if the phone has no voice for this language.
+        final ok = await _tts.isLanguageAvailable(languageCode) == true;
+        await _tts.setLanguage(ok ? languageCode : 'en-IN');
+        _deviceLang = ok ? languageCode : 'en-IN';
+      }
       await _tts.speak(clean);
     } finally {
       if (gen == _generation) _set(false);
     }
   }
 
-  Future<void> _speakSarvam(String text, String key, int gen) async {
+  String _deviceLang = 'en-IN';
+
+  Future<void> _speakSarvam(String text, String key, int gen, String languageCode) async {
     final chunks = _chunk(text, 450);
     // Pipeline: synthesise the next chunk while the current one plays.
     Future<Uint8List> synth(String c) async {
@@ -78,6 +87,7 @@ class SpeechOutput extends ChangeNotifier {
           text: c,
           model: settings.sarvamTtsModel,
           speaker: settings.sarvamSpeaker,
+          languageCode: languageCode,
           pace: settings.ttsPace,
         );
         unawaited(memory.logVoiceUsage('tts', c.length.toDouble(), true));
@@ -130,7 +140,7 @@ class SpeechOutput extends ChangeNotifier {
 
   static List<String> _chunk(String text, int max) {
     if (text.length <= max) return [text];
-    final sentences = RegExp(r'[^.!?]+[.!?]*\s*').allMatches(text).map((m) => m.group(0)!).toList();
+    final sentences = RegExp(r'[^.!?।]+[.!?।]*\s*').allMatches(text).map((m) => m.group(0)!).toList();
     final out = <String>[];
     var cur = StringBuffer();
     for (final s in sentences) {
