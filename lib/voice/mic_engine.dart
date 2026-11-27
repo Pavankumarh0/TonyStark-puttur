@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_voice_processor/flutter_voice_processor.dart';
+import 'package:flutter/services.dart';
 
 import 'wake_word.dart';
 
@@ -18,7 +19,11 @@ class MicEngine extends ChangeNotifier {
   static const frameLength = 512; // Porcupine frame length at 16 kHz
   static const _framesPerSecond = sampleRate / frameLength; // ≈31.25
 
-  final VoiceProcessor _vp = VoiceProcessor.instance!;
+  // Process-scoped native microphone (MicStreamer.kt). Keeps streaming when the UI is closed or
+  // moves between the full app and the assistant panel.
+  static const _ch = MethodChannel('jarvis/device');
+  static const _frames = EventChannel('jarvis/mic_frames');
+  StreamSubscription<dynamic>? _frameSub;
   WakeWordDetector? _detector;
   Future<void> _detectorChain = Future.value();
   String? get wakeEngineName => _detector?.name;
@@ -46,28 +51,38 @@ class MicEngine extends ChangeNotifier {
   double _noiseFloor = 300;
   String? lastError;
 
-  MicEngine() {
-    _vp.addFrameListener(_onFrame);
-    _vp.addErrorListener((e) {
-      lastError = e.message;
-      notifyListeners();
-    });
+  MicEngine();
+
+  void _ensureSubscribed() {
+    _frameSub ??= _frames.receiveBroadcastStream().listen(
+      (data) {
+        if (data is Uint8List) {
+          _onFrame(Int16List.view(data.buffer, data.offsetInBytes, data.lengthInBytes ~/ 2));
+        }
+      },
+      onError: (Object e) {
+        lastError = e is PlatformException ? (e.message ?? e.code) : e.toString();
+        _running = false;
+        notifyListeners();
+      },
+    );
   }
 
-  Future<bool> hasPermission() async => (await _vp.hasRecordAudioPermission()) ?? false;
-
-  /// Starts the shared microphone stream. Requires RECORD_AUDIO.
+  /// Starts the shared microphone stream. Requires RECORD_AUDIO (checked by the caller).
   Future<void> start() async {
     if (_running) return;
-    await _vp.start(frameLength, sampleRate);
-    _running = (await _vp.isRecording()) ?? true;
+    _ensureSubscribed();
+    final err = await _ch.invokeMethod<String>('micStart');
+    if (err != null) throw Exception(err);
+    _running = true;
+    lastError = null;
     notifyListeners();
   }
 
   Future<void> stop() async {
     _capture?.finish(null);
     _capture = null;
-    if (_running) await _vp.stop();
+    if (_running) await _ch.invokeMethod('micStop');
     _running = false;
     _level.add(0);
     notifyListeners();
@@ -235,7 +250,7 @@ class MicEngine extends ChangeNotifier {
 
   @override
   void dispose() {
-    _vp.removeFrameListener(_onFrame);
+    _frameSub?.cancel();
     _detector?.dispose();
     _level.close();
     super.dispose();

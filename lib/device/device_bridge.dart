@@ -132,6 +132,11 @@ class DeviceBridge {
     return [for (final m in list) NotificationItem.fromMap(m)];
   }
 
+  /// Media keys / volume for the app currently playing. Returns the verified outcome:
+  /// paused | playing | done | not_playing | already_playing | nothing_to_resume | unchanged.
+  Future<String> mediaControl(String action) async =>
+      await _ch.invokeMethod<String>('mediaControl', {'action': action}) ?? 'unchanged';
+
   // ---- assistant role / half-screen panel
   Future<bool> isDefaultAssistant() async => await _ch.invokeMethod<bool>('isDefaultAssistant') ?? false;
   Future<void> openAssistantSettings() => _ch.invokeMethod('openAssistantSettings');

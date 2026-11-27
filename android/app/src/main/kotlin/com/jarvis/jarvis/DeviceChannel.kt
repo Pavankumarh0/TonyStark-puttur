@@ -31,6 +31,7 @@ object DeviceChannel {
         app = context.applicationContext
         val messenger = engine.dartExecutor.binaryMessenger
         MethodChannel(messenger, "jarvis/device").setMethodCallHandler { call, result -> handle(call, result) }
+        EventChannel(messenger, "jarvis/mic_frames").setStreamHandler(MicStreamer)
         EventChannel(messenger, "jarvis/events").setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) { sink = events }
             override fun onCancel(arguments: Any?) { sink = null }
@@ -125,6 +126,49 @@ object DeviceChannel {
                             mapOf("status" to "playing") else mapOf("status" to "failed", "reason" to "Spotify is not installed")
                         else -> MediaAutomator.playOnYouTube(app_, q)
                     }
+                }
+            }
+            // ---------------- process-scoped microphone
+            "micStart" -> result.success(MicStreamer.start())
+            "micStop" -> { MicStreamer.stop(); result.success(null) }
+            "micRunning" -> result.success(MicStreamer.isRunning)
+            // ---------------- media keys & volume (no AI) — works for whatever app is playing
+            "mediaControl" -> {
+                val am = app.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                val action = call.argument<String>("action") ?: ""
+                val key = when (action) {
+                    "pause" -> android.view.KeyEvent.KEYCODE_MEDIA_PAUSE
+                    "play" -> android.view.KeyEvent.KEYCODE_MEDIA_PLAY
+                    "next" -> android.view.KeyEvent.KEYCODE_MEDIA_NEXT
+                    "previous" -> android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS
+                    else -> null
+                }
+                // Reports what ACTUALLY happened (checked before/after), never just "key sent".
+                when {
+                    key != null -> background(result) {
+                        val wasPlaying = am.isMusicActive
+                        if ((action == "pause" || action == "next" || action == "previous") && !wasPlaying) return@background "not_playing"
+                        if (action == "play" && wasPlaying) return@background "already_playing"
+                        am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, key))
+                        am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, key))
+                        Thread.sleep(900)
+                        val now = am.isMusicActive
+                        when (action) {
+                            "pause" -> if (!now) "paused" else "unchanged"
+                            "play" -> if (now) "playing" else "nothing_to_resume"
+                            else -> if (now) "done" else "unchanged"
+                        }
+                    }
+                    action == "volume_up" || action == "volume_down" -> {
+                        val dir = if (action == "volume_up") android.media.AudioManager.ADJUST_RAISE else android.media.AudioManager.ADJUST_LOWER
+                        repeat(2) { am.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, dir, android.media.AudioManager.FLAG_SHOW_UI) }
+                        result.success("done")
+                    }
+                    action == "mute" -> {
+                        am.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_MUTE, android.media.AudioManager.FLAG_SHOW_UI)
+                        result.success("done")
+                    }
+                    else -> result.success("unsupported")
                 }
             }
             // ---------------- phone calls (no AI)

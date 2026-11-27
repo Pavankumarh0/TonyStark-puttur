@@ -393,6 +393,9 @@ class JarvisOrchestrator extends ChangeNotifier {
     final kind = _kindOf(intent);
     await _store('user', raw, source: source, kind: kind, route: intent.requiresAi ? 'ai' : 'local');
 
+    // 0) Media controls act on the playing app immediately (no task needed).
+    if (intent is MediaControlIntent) return _mediaControl(intent.action);
+
     // 1) Interrupt controller — always local, always first.
     switch (intent) {
       case StopIntent():
@@ -497,7 +500,8 @@ class JarvisOrchestrator extends ChangeNotifier {
         StopIntent() || StopEverythingIntent() || PauseIntent() || ResumeIntent() || CancelTaskIntent() ||
         StatusIntent() || ContinueWhereStoppedIntent() || StopListeningIntent() => 'control',
         ApproveIntent() || RejectIntent() || EditMessageIntent() || ChooseOptionIntent() => 'answer',
-        OpenAppIntent() || SendMessageIntent() => 'command',
+        OpenAppIntent() || SendMessageIntent() || PlayMediaIntent() || CallIntent() || CheckMessagesIntent() ||
+        MediaControlIntent() => 'command',
         KnowledgeIntent() => 'knowledge',
         WriteIntent() => 'write',
         RememberIntent() => 'remember',
@@ -954,6 +958,34 @@ class JarvisOrchestrator extends ChangeNotifier {
     }
     final s = e.toString().replaceFirst('Exception: ', '');
     return 'I couldn\'t complete that, $a. $s';
+  }
+
+  Future<void> _mediaControl(MediaAction a) async {
+    final key = switch (a) {
+      MediaAction.pause => 'pause',
+      MediaAction.play => 'play',
+      MediaAction.next => 'next',
+      MediaAction.previous => 'previous',
+      MediaAction.volumeUp => 'volume_up',
+      MediaAction.volumeDown => 'volume_down',
+      MediaAction.mute => 'mute',
+    };
+    if (a == MediaAction.pause || a == MediaAction.mute) await speechOut.stop();
+    final r = await device.mediaControl(key);
+    final sir = settings.address;
+    final line = switch (r) {
+      'paused' => 'Paused.',
+      'not_playing' => 'Nothing is playing right now, $sir.',
+      'already_playing' => "It's already playing, $sir.",
+      'nothing_to_resume' => "There's nothing to resume, $sir.",
+      'unchanged' => "I sent the command, but the player didn't respond, $sir.",
+      _ => '', // playing / done: don't talk over the music
+    };
+    if (line.isNotEmpty) {
+      await _say(line, kind: 'command');
+    } else {
+      await _store('jarvis', 'Done: ${key.replaceAll('_', ' ')}.', route: 'local', kind: 'command');
+    }
   }
 
   // ---- runner: play media (local — no AI)

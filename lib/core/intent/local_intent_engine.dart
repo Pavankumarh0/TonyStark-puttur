@@ -54,6 +54,9 @@ class LocalIntentEngine {
     final n = norm(text);
     if (n.isEmpty) return const UnknownIntent('');
 
+    final media = _mediaControl(n);
+    if (media != null) return media;
+
     final control = _control(n, ctx);
     if (control != null) return control;
 
@@ -76,6 +79,28 @@ class LocalIntentEngine {
         _write(text, n) ??
         _knowledge(text, n) ??
         UnknownIntent(text);
+  }
+
+  // ---------------------------------------------------------------- media controls (local)
+  static const _mediaNoun = r"(the )?(music|song|songs|video|track|playback|youtube|spotify|audio)";
+  LocalIntent? _mediaControl(String n) {
+    final t = n.replaceFirst(RegExp(r"^(uh|um|hey|ok|okay) "), '');
+    if (RegExp("^(pause|stop|halt) $_mediaNoun( please| now)?\$").hasMatch(t)) return const MediaControlIntent(MediaAction.pause);
+    if (RegExp("^(resume|continue|unpause|play) $_mediaNoun( please| again)?\$").hasMatch(t)) return const MediaControlIntent(MediaAction.play);
+    if (RegExp(r"^(next|skip)( song| track| video| one)?( please)?$|^(play )?(the )?next (song|track|video)$|^skip (this|the) (song|track|video)$").hasMatch(t)) {
+      return const MediaControlIntent(MediaAction.next);
+    }
+    if (RegExp(r"^(previous|last)( song| track| video)( please)?$|^(play )?(the )?previous (song|track|video)$|^go back (a|one) (song|track)$").hasMatch(t)) {
+      return const MediaControlIntent(MediaAction.previous);
+    }
+    if (RegExp(r"^(volume up|increase (the )?volume|turn (it|the volume) up|louder|raise (the )?volume)( please)?$").hasMatch(t)) {
+      return const MediaControlIntent(MediaAction.volumeUp);
+    }
+    if (RegExp(r"^(volume down|decrease (the )?volume|lower (the )?volume|turn (it|the volume) down|quieter|reduce (the )?volume)( please)?$").hasMatch(t)) {
+      return const MediaControlIntent(MediaAction.volumeDown);
+    }
+    if (RegExp(r"^(mute|mute (the )?(volume|music|sound))( please)?$").hasMatch(t)) return const MediaControlIntent(MediaAction.mute);
+    return null;
   }
 
   // ---------------------------------------------------------------- control
