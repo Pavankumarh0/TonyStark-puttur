@@ -1347,8 +1347,13 @@ class JarvisOrchestrator extends ChangeNotifier {
   }
 
   // ---- runner: generic screen agent (AI plans one step at a time; LEO executes with safety rails)
+  /// Buttons that need the user's OK before LEO presses them.
+  static bool isSensitiveLabel(String label) => _sensitiveWords.hasMatch(label);
+
   static final _sensitiveWords = RegExp(
-      r'\b(send|delete|remove|discard|trash|archive all|pay|payment|buy|buy now|purchase|order|place order|checkout|post|publish|share|submit|confirm|transfer|install|uninstall|book|reserve|forward|reply all|unsubscribe|block|report|clear all|factory reset|erase)\b',
+      r'\b(send|delete|remove|discard|trash|archive all|pay|payment|buy|buy now|purchase|order|place order|checkout|post|publish|share|submit|confirm|transfer|install|uninstall|book|reserve|forward|reply all|unsubscribe|block|report|clear all|factory reset|erase|'
+      // Anything that reaches another person or changes the account also needs an OK:
+      r'call|calls|video call|voice call|audio call|dial|ring|join|join now|start meeting|go live|follow|unfollow|accept|decline|sign out|log out|logout)\b',
       caseSensitive: false);
 
   Future<String?> _runAgent(TaskTracker tr) => _agentFor(tr, tr.snapshot.params['goal'] as String);

@@ -227,4 +227,13 @@ void main() {
     });
     test('nothing similar → empty (agent takes over)', () => expect(JarvisOrchestrator.matchButtons(screen, 'checkout'), isEmpty));
   });
+
+  group('Approval needed before pressing', () {
+    for (final l in ['Video call', 'Voice call', 'Call', 'Join now', 'Follow', 'Send', 'Pay ₹499', 'Delete chat', 'Log out']) {
+      test(l, () => expect(JarvisOrchestrator.isSensitiveLabel(l), isTrue));
+    }
+    for (final l in ['Message', 'Reels', 'Search', 'Home', 'Back', 'Settings']) {
+      test('$l is fine', () => expect(JarvisOrchestrator.isSensitiveLabel(l), isFalse));
+    }
+  });
 }
