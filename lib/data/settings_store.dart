@@ -105,6 +105,10 @@ class SettingsStore extends ChangeNotifier {
   bool get speakResponses => _prefs.getBool('speak_responses') ?? true;
   set speakResponses(bool v) => _setB('speak_responses', v);
 
+  /// Let Sarvam's chat model understand free-form speech and turn it into clear LEO commands.
+  bool get sarvamUnderstanding => _prefs.getBool('sarvam_understanding') ?? true;
+  set sarvamUnderstanding(bool v) => _setB('sarvam_understanding', v);
+
   bool get followUpListening => _prefs.getBool('follow_up_listening') ?? true;
   set followUpListening(bool v) => _setB('follow_up_listening', v);
 

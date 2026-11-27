@@ -1,3 +1,4 @@
+import '../ai/sarvam_brain.dart';
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
@@ -60,6 +61,7 @@ class JarvisOrchestrator extends ChangeNotifier {
   final MemoryRepository memory;
   final ContextBuilder contextBuilder;
   final AiService ai;
+  final SarvamBrain sarvamBrain = SarvamBrain();
   final MicEngine mic;
   final SpeechInput speechIn;
   final SpeechOutput speechOut;
@@ -430,6 +432,8 @@ class JarvisOrchestrator extends ChangeNotifier {
       if (guess != null) {
         debugPrint('LEO local-model: "$_currentUtterance" → ${guess.runtimeType}');
         intent = guess;
+      } else if (source != 'sarvam' && _sarvamReady && await _understandWithSarvam(raw, source)) {
+        return; // Sarvam understood it and handed LEO clear commands
       } else {
         // Voice + screen: "delete this", "share it", "save that" in the assistant panel act on the app underneath.
         final deictic = RegExp(r'\b(this|it|that|here|these|those)\b', caseSensitive: false).hasMatch(_currentUtterance);
@@ -444,6 +448,18 @@ class JarvisOrchestrator extends ChangeNotifier {
           }
         }
       }
+    }
+    if (source != 'sarvam' &&
+        _sarvamReady &&
+        _freeTextWait == null &&
+        _choiceWait == null &&
+        _approvalWait == null &&
+        (intent is KnowledgeIntent ||
+            (intent is PhoneTaskIntent &&
+                LocalAgentBrain.shareTarget(intent.goal) == null &&
+                LocalAgentBrain.searchQuery(intent.goal) == null)) &&
+        await _understandWithSarvam(raw, source)) {
+      return;
     }
     final kind = _kindOf(intent);
     await _store('user', raw, source: source, kind: kind, route: intent.requiresAi ? 'ai' : 'local');
@@ -3004,6 +3020,74 @@ class JarvisOrchestrator extends ChangeNotifier {
   }
 
   // ------------------------------------------------------------------ speaking & storage
+  // ------------------------------------------------------------------ Sarvam understanding
+  bool get _sarvamReady => settings.sarvamUnderstanding && settings.hasSecret(SecretKey.sarvam);
+
+  /// Sends what the user said (plus the app on screen and recent turns) to Sarvam, which rewrites it
+  /// into plain LEO commands / a short answer / a clarifying question. Returns false to fall back.
+  Future<bool> _understandWithSarvam(String raw, String source) async {
+    final key = settings.secret(SecretKey.sarvam) ?? '';
+    String? screenApp;
+    try {
+      if (!await device.uiVisible() || assistMode) {
+        final d = await device.screenDump(max: 4, skipOwn: true);
+        final pkg = d['package'] as String?;
+        if (pkg != null) screenApp = (await apps.apps()).where((x) => x.packageName == pkg).map((x) => x.label).firstOrNull ?? pkg;
+      }
+    } catch (_) {}
+    final recent = [
+      for (final m in messages.length > 6 ? messages.sublist(messages.length - 6) : messages)
+        '${m.role == 'user' ? 'User' : 'LEO'}: ${m.text.length > 160 ? m.text.substring(0, 160) : m.text}'
+    ];
+    Interpretation? r;
+    var ok = false;
+    try {
+      r = await sarvamBrain.interpret(apiKey: key, utterance: raw, screenApp: screenApp, recentTurns: recent);
+      ok = r != null;
+    } catch (e) {
+      debugPrint('LEO sarvam-understand failed: $e');
+    } finally {
+      unawaited(memory.logTokenUsage(
+          provider: 'sarvam', model: SarvamBrain.model, purpose: 'understand',
+          input: r?.inputTokens, output: r?.outputTokens,
+          total: r == null ? null : (r.inputTokens ?? 0) + (r.outputTokens ?? 0), reported: r?.inputTokens != null, ok: ok));
+    }
+    if (r == null || r.isEmpty) return false;
+    debugPrint('LEO sarvam-understand: "$raw" → ${r.commands} answer=${r.answer != null} clarify=${r.clarify}');
+    await _store('user', raw, source: source, kind: 'conversation', route: 'sarvam');
+    if (r.commands.isEmpty) {
+      await _say(r.clarify ?? r.answer!, route: 'sarvam', kind: r.clarify != null ? 'question' : 'answer');
+      return true;
+    }
+    // Run the commands in order through the normal engine (all rules & approvals apply). The first
+    // starts now; the rest wait for each task to finish, so the voice loop stays free for answers.
+    await handleInput(r.commands.first, source: 'sarvam');
+    if (r.commands.length > 1) unawaited(_runCommandChain(r.commands.sublist(1)));
+    return true;
+  }
+
+  int _chainId = 0;
+  Future<void> _runCommandChain(List<String> rest) async {
+    final id = ++_chainId;
+    for (final c in rest) {
+      if (!await _waitTaskIdle() || id != _chainId) return;
+      if (task?.state == AgentState.failed || task?.state == AgentState.cancelled) return; // don't plough on after a failure
+      await handleInput(c, source: 'sarvam');
+    }
+  }
+
+  /// Waits (max 3 min) until no task is running or waiting on the user. False if stopped meanwhile.
+  Future<bool> _waitTaskIdle() async {
+    final end = DateTime.now().add(const Duration(minutes: 3));
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    while (DateTime.now().isBefore(end)) {
+      final busy = (task?.state.isActive ?? false) || approvals.pending != null || choice != null || _freeTextWait != null;
+      if (!busy) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
+    return false;
+  }
+
   Future<void> _store(String role, String text, {String? source, String? route, String? kind}) async {
     final m = await memory.addMessage(sessionId: sessionId, role: role, text: text, source: source, route: route, kind: kind);
     messages = [...messages, m];

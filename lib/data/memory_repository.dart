@@ -350,6 +350,7 @@ class MemoryRepository {
 
   // ------------------------------------------------------------------ usage
   Future<void> logTokenUsage({
+    String provider = 'gemini',
     required String model,
     required String purpose,
     int? input,
@@ -361,7 +362,7 @@ class MemoryRepository {
   }) =>
       _database.db.insert('token_usage', {
         'created_at': DateTime.now().millisecondsSinceEpoch,
-        'provider': 'gemini',
+        'provider': provider,
         'model': model,
         'purpose': purpose,
         'input_tokens': input,

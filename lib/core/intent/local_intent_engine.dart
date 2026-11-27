@@ -297,6 +297,9 @@ class LocalIntentEngine {
   static const askableApps = r"claude|chat ?gpt|gemini|perplexity|copilot|meta ai|grok|deepseek|le chat|mistral|poe|pi";
 
   LocalIntent? _round3(String text, String n) {
+    // Explicit screen goal written by the Sarvam understanding layer.
+    final goal = RegExp(r"^on the phone:\s*(.+)$", caseSensitive: false).firstMatch(text);
+    if (goal != null) return PhoneTaskIntent(goal.group(1)!.trim());
     // "ask it to prepare a PPT about blood", "tell Claude to …", "ask ChatGPT what is …"
     final ask = RegExp("^(?:ask|tell|prompt)\\s+(it|this|that|the app|$askableApps)\\s+(?:to\\s+|for\\s+|about\\s+|that\\s+)?(.+)\$",
             caseSensitive: false)
