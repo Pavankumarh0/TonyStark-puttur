@@ -21,7 +21,7 @@ LEO is a voice assistant that can operate the phone, so it sees personal things:
 | Goes to | When | What exactly | Protection |
 |---|---|---|---|
 | **Sarvam** speech-to-text | Only after "Leo" or a mic tap | The audio of that one request | HTTPS only (cleartext traffic is blocked app-wide) |
-| **Sarvam** text-to-speech | When LEO speaks ordinary replies | LEO's reply text (private things use the phone's own voice) | HTTPS |
+| **Sarvam** text-to-speech | Whenever LEO speaks | LEO's reply text (including read-outs of messages) | HTTPS |
 | **OpenAI** (LEO's brain: understanding, answers, writing) | Only when on-device rules can't place a request, or for a general question | The request text, **with personal data masked**, plus the app's *name* (never its contents) and the last 4 turns, also masked | Masking, `store:false`, a ledger of every call, no screen contents |
 
 **Masking (`lib/core/privacy_filter.dart`).** Before anything is sent, the phone replaces these with placeholders:
@@ -54,10 +54,10 @@ The user can clear it.
 | Turning your voice into text | Sarvam speech-to-text, over HTTPS | **Yes, your voice audio for this one request.** It is the only place the words travel. Nothing is stored by LEO outside the phone. |
 | Understanding "send … saying hi" | Phone rule engine | No. If a cloud model is needed, the body is masked as `<MESSAGE_1>` first. |
 | Finding Rahul in contacts | Phone | No |
-| "I've prepared: 'hi' for Rahul. Shall I send?" | **Phone's own voice** (private speech) | No |
+| "I've prepared: 'hi' for Rahul. Shall I send?" | Sarvam voice, over HTTPS | The confirmation text, to Sarvam only |
 | Your "yes" | Phone; approval bound to this exact text and recipient | No |
 | Sending | **WhatsApp itself**, end-to-end encrypted. LEO only presses Send. | Only to Rahul, via WhatsApp's encryption |
-| Reading Rahul's reply aloud | Phone reads the notification; **phone's own voice** speaks it | No |
+| Reading Rahul's reply aloud | Phone reads the notification; Sarvam voice speaks it | The reply text, to Sarvam only |
 
 LEO has **no server and no cloud database**. "Uses the internet" means three narrow, encrypted calls to named providers, each with a published retention policy. It never means publishing data on the web. Chats are never uploaded, synced or used to train anything.
 
