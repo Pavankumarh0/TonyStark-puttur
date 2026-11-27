@@ -118,8 +118,8 @@ class SettingsScreen extends StatelessWidget {
           title: const Text('Use Picovoice Porcupine'),
           subtitle: Text(
               s.wakeEngine == 'porcupine'
-                  ? 'Porcupine (needs Picovoice key; falls back to free engine if it fails)'
-                  : 'Using free sherpa-onnx keyword spotter (no key, fully on-device)',
+                  ? 'Porcupine only knows the word "Jarvis" — wake word becomes "Jarvis" (needs Picovoice key)'
+                  : 'Say "Leo" — free sherpa-onnx keyword spotter, fully on-device',
               style: const TextStyle(color: JColors.dim)),
         ),
         Card(
@@ -148,9 +148,9 @@ class SettingsScreen extends StatelessWidget {
           value: s.followUpListening,
           onChanged: (v) => s.followUpListening = v,
           title: const Text('Listen again after responding'),
-          subtitle: const Text('One follow-up turn without saying "Jarvis"', style: TextStyle(color: JColors.dim)),
+          subtitle: const Text('One follow-up turn without saying "Leo"', style: TextStyle(color: JColors.dim)),
         ),
-        _TextPref(title: 'How JARVIS addresses you', value: s.address, onChanged: (v) => s.address = v),
+        _TextPref(title: 'How LEO addresses you', value: s.address, onChanged: (v) => s.address = v),
         const SizedBox(height: 30),
       ],
     );

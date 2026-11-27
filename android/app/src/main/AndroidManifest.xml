@@ -11,7 +11,7 @@
     <uses-permission android:name="android.permission.CALL_PHONE" />
 
     <application
-        android:label="JARVIS"
+        android:label="LEO"
         android:name=".JarvisApplication"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false">
@@ -34,7 +34,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Microphone foreground service: keeps the on-device wake word running while JARVIS is
+        <!-- Microphone foreground service: keeps the on-device wake word running while LEO is
              in the background. Must be started while the app is visible (Android 11+ rule). -->
         <service
             android:name=".JarvisListenerService"
@@ -76,11 +76,11 @@
             </intent-filter>
         </activity>
 
-        <!-- Digital assistant role: Settings → Default apps → Digital assistant app → JARVIS -->
+        <!-- Digital assistant role: Settings → Default apps → Digital assistant app → LEO -->
         <service
             android:name=".assistant.JarvisVoiceInteractionService"
             android:exported="true"
-            android:label="JARVIS"
+            android:label="LEO"
             android:permission="android.permission.BIND_VOICE_INTERACTION">
             <intent-filter>
                 <action android:name="android.service.voice.VoiceInteractionService" />
@@ -96,7 +96,7 @@
         <service
             android:name=".assistant.JarvisRecognitionService"
             android:exported="true"
-            android:label="JARVIS">
+            android:label="LEO">
             <intent-filter>
                 <action android:name="android.speech.RecognitionService" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -110,7 +110,7 @@
         <service
             android:name=".JarvisNotificationListener"
             android:exported="true"
-            android:label="JARVIS message reader"
+            android:label="LEO message reader"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />

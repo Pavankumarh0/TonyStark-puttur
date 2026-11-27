@@ -33,7 +33,7 @@ class ContextBuilder {
           ? recent.sublist(0, recent.length - 1)
           : recent;
       if (turns.isNotEmpty) {
-        parts.add('Recent conversation:\n${turns.map((m) => '${m.isUser ? 'User' : 'JARVIS'}: ${_trim(m.text, maxRecentChars)}').join('\n')}');
+        parts.add('Recent conversation:\n${turns.map((m) => '${m.isUser ? 'User' : 'LEO'}: ${_trim(m.text, maxRecentChars)}').join('\n')}');
         sources.add('${turns.length} recent turns');
       }
     }
@@ -41,7 +41,7 @@ class ContextBuilder {
     final relevant = await memory.search(query, limit: 12, excludeSessionId: sessionId);
     final picked = relevant.take(maxRelevant).toList();
     if (picked.isNotEmpty) {
-      parts.add('Possibly relevant earlier conversations:\n${picked.map((m) => '- [${_date(m.createdAt)}] ${m.isUser ? 'User' : 'JARVIS'}: ${_trim(m.text, maxRelevantChars)}').join('\n')}');
+      parts.add('Possibly relevant earlier conversations:\n${picked.map((m) => '- [${_date(m.createdAt)}] ${m.isUser ? 'User' : 'LEO'}: ${_trim(m.text, maxRelevantChars)}').join('\n')}');
       sources.add('${picked.length} retrieved snippets');
     }
 

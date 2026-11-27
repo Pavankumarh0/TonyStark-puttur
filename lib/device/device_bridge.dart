@@ -132,10 +132,16 @@ class DeviceBridge {
     return [for (final m in list) NotificationItem.fromMap(m)];
   }
 
-  /// Media keys / volume for the app currently playing. Returns the verified outcome:
+  /// Controls the playing app via its media session. Returns {status, title, artist, app} where status is
   /// paused | playing | done | not_playing | already_playing | nothing_to_resume | unchanged.
-  Future<String> mediaControl(String action) async =>
-      await _ch.invokeMethod<String>('mediaControl', {'action': action}) ?? 'unchanged';
+  Future<Map<String, dynamic>> mediaControl(String action) async =>
+      await _ch.invokeMapMethod<String, dynamic>('mediaControl', {'action': action}) ?? const {'status': 'unchanged'};
+
+  Future<Map<String, dynamic>> nowPlaying() async =>
+      await _ch.invokeMapMethod<String, dynamic>('nowPlaying') ?? const {};
+
+  /// While listening, pause other audio (transient focus) like Gemini/Assistant; it resumes after.
+  Future<void> listenFocus(bool on) => _ch.invokeMethod('listenFocus', {'on': on});
 
   // ---- assistant role / half-screen panel
   Future<bool> isDefaultAssistant() async => await _ch.invokeMethod<bool>('isDefaultAssistant') ?? false;

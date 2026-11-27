@@ -21,7 +21,7 @@ class JarvisOrb extends StatefulWidget {
 
 class _JarvisOrbState extends State<JarvisOrb> with SingleTickerProviderStateMixin {
   late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(seconds: 8))..repeat();
-  final List<double> _levels = List.filled(64, 0);
+  final List<double> _levels = List<double>.filled(64, 0, growable: true);
   StreamSubscription<double>? _sub;
   double _smoothed = 0;
 
@@ -56,7 +56,7 @@ class _JarvisOrbState extends State<JarvisOrb> with SingleTickerProviderStateMix
   @override
   Widget build(BuildContext context) {
     return Semantics(
-      label: 'JARVIS status: ${widget.state.label}',
+      label: 'LEO status: ${widget.state.label}',
       button: widget.onTap != null,
       child: GestureDetector(
         onTap: widget.onTap,

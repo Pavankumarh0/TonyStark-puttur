@@ -11,9 +11,9 @@ import android.speech.RecognitionService
 import com.jarvis.jarvis.AssistActivity
 
 /**
- * Lets the user pick JARVIS under Settings → Apps → Default apps → Digital assistant app.
+ * Lets the user pick LEO under Settings → Apps → Default apps → Digital assistant app.
  * Long-pressing the side key / home (or swiping up from a bottom corner) then opens the
- * half-screen JARVIS panel instead of Google's assistant.
+ * half-screen LEO panel instead of Google's assistant.
  */
 class JarvisVoiceInteractionService : VoiceInteractionService()
 
@@ -35,7 +35,7 @@ class JarvisSession(context: Context) : VoiceInteractionSession(context) {
     }
 }
 
-/** Required by the platform for a voice interaction service. JARVIS does its own speech recognition. */
+/** Required by the platform for a voice interaction service. LEO does its own speech recognition. */
 class JarvisRecognitionService : RecognitionService() {
     override fun onStartListening(recognizerIntent: Intent?, listener: Callback?) {
         listener?.error(android.speech.SpeechRecognizer.ERROR_RECOGNIZER_BUSY)

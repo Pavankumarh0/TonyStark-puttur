@@ -198,7 +198,7 @@ class MemoryRepository {
 
   static const _stop = {
     'the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'on', 'for', 'is', 'are', 'was', 'were', 'it', 'that', 'this',
-    'with', 'my', 'me', 'i', 'you', 'we', 'our', 'what', 'how', 'can', 'do', 'did', 'please', 'jarvis', 'about',
+    'with', 'my', 'me', 'i', 'you', 'we', 'our', 'what', 'how', 'can', 'do', 'did', 'please', 'jarvis', 'leo', 'about',
     'be', 'at', 'as', 'by', 'from', 'your', 'tell', 'give', 'make', 'write', 'some', 'any', 'have', 'has', 'had',
     'will', 'would', 'should', 'could', 'just', 'so', 'if', 'then', 'there', 'they', 'them', 'he', 'she', 'his',
     'her', 'its', 'im', "i'm", 'us', 'yes', 'no', 'not', 'sir', 'get', 'got', 'want', 'need', 'like',

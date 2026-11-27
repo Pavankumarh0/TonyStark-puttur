@@ -75,7 +75,14 @@ void main() {
     test('next song', () => expect(a('next song'), MediaAction.next));
     test('skip this song', () => expect(a('skip this song'), MediaAction.next));
     test('volume up', () => expect(a('volume up'), MediaAction.volumeUp));
-    test('plain STOP still stops JARVIS tasks', () => expect(e.parse('stop'), isA<StopIntent>()));
+    test('plain STOP still stops LEO tasks', () => expect(e.parse('stop'), isA<StopIntent>()));
     test('play pesamale still searches', () => expect(e.parse('play pesamale'), isA<PlayMediaIntent>()));
+  });
+
+  group('Wake name LEO is stripped like JARVIS', () {
+    final e = LocalIntentEngine();
+    test('Leo, stop', () => expect(e.parse('Leo, stop'), isA<StopIntent>()));
+    test('Hey Leo, play pesamale', () => expect((e.parse('Hey Leo, play pesamale') as PlayMediaIntent).query, 'pesamale'));
+    test('Leo call pavan', () => expect((e.parse('Leo call pavan') as CallIntent).name, 'pavan'));
   });
 }

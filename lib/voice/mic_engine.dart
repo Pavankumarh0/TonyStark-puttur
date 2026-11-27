@@ -11,9 +11,9 @@ import 'wake_word.dart';
 enum WakeWordStatus { off, starting, armed, error }
 
 /// One microphone pipeline (16 kHz, 512-sample frames) shared by:
-///  * Porcupine — offline "Jarvis" wake word (audio never leaves the device), and
+///  * Porcupine — offline "Leo" wake word (audio never leaves the device), and
 ///  * the utterance recorder — energy-based voice activity detection that captures one command.
-/// Using one AudioRecord avoids mic hand-off races and allows "Jarvis" barge-in while speaking.
+/// Using one AudioRecord avoids mic hand-off races and allows "Leo" barge-in while speaking.
 class MicEngine extends ChangeNotifier {
   static const sampleRate = 16000;
   static const frameLength = 512; // Porcupine frame length at 16 kHz
@@ -36,7 +36,7 @@ class MicEngine extends ChangeNotifier {
   WakeWordStatus get wakeStatus => _wakeStatus;
   String? get wakeError => _wakeError;
 
-  /// Called on the platform thread's event loop when "Jarvis" is detected.
+  /// Called on the platform thread's event loop when "Leo" is detected.
   VoidCallback? onWake;
   bool wakeSuppressed = false;
 
@@ -57,7 +57,15 @@ class MicEngine extends ChangeNotifier {
     _frameSub ??= _frames.receiveBroadcastStream().listen(
       (data) {
         if (data is Uint8List) {
-          _onFrame(Int16List.view(data.buffer, data.offsetInBytes, data.lengthInBytes ~/ 2));
+          // Platform-channel buffers can start at an odd offset, so decode via ByteData
+          // (alignment-safe) instead of an Int16List view.
+          final bd = ByteData.sublistView(data);
+          final n = data.lengthInBytes ~/ 2;
+          final frame = Int16List(n);
+          for (var i = 0; i < n; i++) {
+            frame[i] = bd.getInt16(i * 2, Endian.little);
+          }
+          _onFrame(frame);
         }
       },
       onError: (Object e) {
@@ -205,8 +213,8 @@ class MicEngine extends ChangeNotifier {
     }
   }
 
-  /// While JARVIS is speaking, the recorder ignores audio so it never transcribes its own voice.
-  /// (The wake word stays active so "Jarvis" can still barge in.)
+  /// While LEO is speaking, the recorder ignores audio so it never transcribes its own voice.
+  /// (The wake word stays active so "Leo" can still barge in.)
   bool captureMuted = false;
 
   void _feedCapture(_Capture c, List<int> frame, double rms) {

@@ -22,7 +22,7 @@ class IntentContext {
 /// [UnknownIntent], [KnowledgeIntent] and [WriteIntent] ever reach Gemini.
 class LocalIntentEngine {
   static final _leadingFiller = RegExp(
-    r"^((hey|ok|okay|hi|yo)\s+)?(jarvis[\s,.!:]*)?"
+    r"^((hey|ok|okay|hi|yo)\s+)?((?:jarvis|leo)[\s,.!:]*)?"
     r"((please|kindly|can you|could you|would you|will you|i want you to|i need you to|i'd like you to)\s+)*",
     caseSensitive: false,
   );
@@ -340,14 +340,14 @@ class LocalIntentEngine {
         .hasMatch(n)) {
       return const TellDateIntent();
     }
-    if (RegExp(r"^(hi|hello|hey|yo|good morning|good afternoon|good evening|wake up|are you there|you there|daddy's home)( jarvis| buddy| there)?$")
+    if (RegExp(r"^(hi|hello|hey|yo|good morning|good afternoon|good evening|wake up|are you there|you there|daddy's home)( jarvis| leo| buddy| there)?$")
         .hasMatch(n)) {
       return const GreetingIntent();
     }
-    if (RegExp(r"^(how are you|how are you doing|how's it going|how are things|are you ok|are you okay)( today| jarvis)?$").hasMatch(n)) {
+    if (RegExp(r"^(how are you|how are you doing|how's it going|how are things|are you ok|are you okay)( today| jarvis| leo)?$").hasMatch(n)) {
       return const HowAreYouIntent();
     }
-    if (RegExp(r"^(thanks|thank you|thank you so much|thanks a lot|great job|well done|good job|nice work|perfect|awesome|great)( jarvis| buddy| sir)?$")
+    if (RegExp(r"^(thanks|thank you|thank you so much|thanks a lot|great job|well done|good job|nice work|perfect|awesome|great)( jarvis| leo| buddy| sir)?$")
         .hasMatch(n)) {
       return const ThanksIntent();
     }

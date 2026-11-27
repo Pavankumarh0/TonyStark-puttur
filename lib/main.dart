@@ -70,7 +70,7 @@ class JarvisApp extends StatelessWidget {
     // Assistant role: the translucent AssistActivity shows a half-screen panel instead of the full app.
     final assist = context.select<JarvisOrchestrator, bool>((o) => o.assistMode);
     return MaterialApp(
-      title: 'JARVIS',
+      title: 'LEO',
       debugShowCheckedModeBanner: false,
       theme: jarvisTheme(),
       color: assist ? Colors.transparent : JColors.bg,
