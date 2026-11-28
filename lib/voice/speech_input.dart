@@ -28,7 +28,7 @@ class SpeechInput {
 
   SpeechInput(this.mic, this.sarvam, this.settings, this.memory);
 
-  /// Language of the conversation, from the last utterance (en-IN, hi-IN or kn-IN).
+  /// Language of the conversation, from the last utterance (en-IN or kn-IN).
   String lastLanguage = Lang.english;
   String? lastDetected;
   int? lastSttMs;
@@ -63,7 +63,7 @@ class SpeechInput {
         apiKey: key,
         wav: encodeWav(samples, sampleRate: MicEngine.sampleRate),
         model: settings.sarvamSttModel,
-        // Mixed-language mode: Hindi/Kannada/code-mixed speech is translated to English text, so all of
+        // Mixed-language mode: Kannada/code-mixed speech is translated to English text, so all of
         // LEO's command handling works unchanged — and Sarvam tells us which language was spoken.
         languageCode: settings.mixedLanguage ? 'unknown' : 'en-IN',
         mode: settings.mixedLanguage ? 'translate' : 'transcribe',

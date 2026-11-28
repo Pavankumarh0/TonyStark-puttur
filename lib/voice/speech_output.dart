@@ -41,7 +41,7 @@ class SpeechOutput extends ChangeNotifier {
   /// Speaks [text]; completes when finished or when [stop] is called.
   /// [private] text (messages, chats, OTPs, screen contents) is spoken with the phone's own voice only —
   /// it is never sent to a cloud voice service.
-  /// [languageCode] (en-IN, hi-IN, kn-IN) picks the voice's language — LEO answers in the language you spoke.
+  /// [languageCode] (en-IN, kn-IN) picks the voice's language — LEO answers in the language you spoke.
   Future<void> speak(String text, {bool private = false, String languageCode = 'en-IN'}) async {
     final clean = _speakable(text);
     if (clean.isEmpty) return;

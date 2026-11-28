@@ -1,4 +1,4 @@
-﻿import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_test/flutter_test.dart';
 import 'package:jarvis/core/intent/local_intent.dart';
 import 'package:jarvis/core/intent/local_intent_engine.dart';
 import 'package:jarvis/orchestrator/jarvis_orchestrator.dart';
@@ -19,31 +19,39 @@ class FakeSarvam extends SarvamClient {
 }
 
 void main() {
-  group('language detection', () {
-    test('a confident Kannada / Hindi / English detection sets the reply language', () {
+  group('language detection (English and Kannada only)', () {
+    test('a confident Kannada / English detection sets the reply language', () {
       expect(Lang.pick('kn-IN', 0.87, previous: Lang.english), Lang.kannada);
-      expect(Lang.pick('hi-IN', 0.99, previous: Lang.kannada), Lang.hindi);
-      expect(Lang.pick('en-IN', 0.99, previous: Lang.hindi), Lang.english);
+      expect(Lang.pick('en-IN', 0.99, previous: Lang.kannada), Lang.english);
     });
 
-    test('low confidence or unsupported languages keep the conversation language', () {
-      expect(Lang.pick('kn-IN', 0.4, previous: Lang.hindi), Lang.hindi);
-      expect(Lang.pick('hi-IN', 0.56, previous: Lang.english), Lang.hindi); // real score for a short Hindi command // e.g. a one-word "ok"
-      expect(Lang.pick('ta-IN', 0.99, previous: Lang.english), Lang.english);
+    test('Hindi is not used: Hindi (or its neighbours) is answered in English', () {
+      expect(Lang.pick('hi-IN', 0.99, previous: Lang.english), Lang.english);
+      expect(Lang.pick('hi-IN', 0.56, previous: Lang.kannada), Lang.english);
+      expect(Lang.pick('gu-IN', 0.75, previous: Lang.english), Lang.english);
+      expect(Lang.pick('mr-IN', 0.9, previous: Lang.english), Lang.english);
+      expect(Lang.supported, {Lang.english, Lang.kannada});
+    });
+
+    test('low confidence keeps the conversation language', () {
+      expect(Lang.pick('kn-IN', 0.4, previous: Lang.english), Lang.english);
+      expect(Lang.pick('kn-IN', 0.4, previous: Lang.kannada), Lang.kannada);
+      expect(Lang.pick('en-IN', 0.3, previous: Lang.kannada), Lang.kannada); // e.g. a one-word "ok"
       expect(Lang.pick(null, null, previous: Lang.kannada), Lang.kannada);
     });
 
-    test('an unsure Gujarati/Marathi/Punjabi score on a short Hindi command counts as Hindi', () {
-      expect(Lang.pick('gu-IN', 0.75, previous: Lang.english), Lang.hindi); // "फ्लैशलाइट चालू करो" (real result)
-      expect(Lang.pick('gu-IN', 0.97, previous: Lang.english), Lang.english); // confident Gujarati → not guessed
+    test('an unsure Telugu/Tamil/Malayalam score on a short command counts as Kannada', () {
+      expect(Lang.pick('te-IN', 0.7, previous: Lang.english), Lang.kannada);
+      expect(Lang.pick('ta-IN', 0.4, previous: Lang.kannada), Lang.kannada);
+      expect(Lang.pick('ta-IN', 0.4, previous: Lang.english), Lang.english);
+      expect(Lang.pick('ta-IN', 0.99, previous: Lang.english), Lang.english); // confident Tamil → English
     });
 
-    test('typed text: language from its script', () {
+    test('typed text: Kannada script → Kannada; anything else → English path', () {
       expect(Lang.ofScript('ಅಮ್ಮನಿಗೆ ಕರೆ ಮಾಡು'), Lang.kannada);
-      expect(Lang.ofScript('कल सुबह अलार्म लगा दो'), Lang.hindi);
       expect(Lang.ofScript('YouTube ನಲ್ಲಿ ಹಾಡು ಪ್ಲೇ ಮಾಡು'), Lang.kannada); // mixed
-      expect(Lang.ofScript('set an alarm for 6'), isNull); // English → unchanged path
-      expect(Lang.ofScript('Rahul ko message karo'), isNull); // romanised Hinglish typed → English path (LLM handles it)
+      expect(Lang.ofScript('कल सुबह अलार्म लगा दो'), isNull); // Hindi not used
+      expect(Lang.ofScript('set an alarm for 6'), isNull);
     });
   });
 
@@ -70,7 +78,7 @@ void main() {
       expect(i, isA<CallIntent>());
       expect((i as CallIntent).name.toLowerCase(), 'mother');
     });
-    // Hindi "कल सुबह छह बजे का अलार्म लगा दो"
+    // Spoken alarm request, as Sarvam's English translation
     test('"Set an alarm for 6:00 AM tomorrow morning."', () {
       expect(engine.parse('Set an alarm for 6:00 AM tomorrow morning.'), isA<SetAlarmIntent>());
     });
@@ -110,8 +118,8 @@ void main() {
     test('repeated phrases come from the cache', () async {
       final f = FakeSarvam();
       final t = ReplyTranslator(f, () => 'k');
-      await t.toLanguage('Anything else, sir?', Lang.hindi);
-      await t.toLanguage('Anything else, sir?', Lang.hindi);
+      await t.toLanguage('Anything else, sir?', Lang.kannada);
+      await t.toLanguage('Anything else, sir?', Lang.kannada);
       expect(f.sent.length, 1);
     });
 

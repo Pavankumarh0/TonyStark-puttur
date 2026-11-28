@@ -1,45 +1,46 @@
 ﻿
 import 'sarvam_client.dart';
 
-/// Multilingual support: LEO understands Kannada, Hindi and mixed speech (Sarvam translates it to
-/// English, which all of LEO's existing command handling already understands) and replies in the
-/// language the user spoke.
+/// Multilingual support: LEO understands Kannada and Kannada–English mixed speech (Sarvam translates
+/// it to English, which all of LEO's existing command handling already understands) and replies in
+/// Kannada when spoken to in Kannada. Everything else is answered in English.
 class Lang {
-  static const english = 'en-IN', hindi = 'hi-IN', kannada = 'kn-IN';
-  static const supported = {english, hindi, kannada};
-  static const names = {english: 'English', hindi: 'हिन्दी', kannada: 'ಕನ್ನಡ'};
+  static const english = 'en-IN', kannada = 'kn-IN';
+  static const supported = {english, kannada};
+  static const names = {english: 'English', kannada: 'ಕನ್ನಡ'};
 
-  static const _hindiNeighbours = {'gu-IN', 'mr-IN', 'pa-IN'};
+  /// Short Kannada commands are sometimes scored as a close South Indian neighbour.
+  static const _kannadaNeighbours = {'te-IN', 'ta-IN', 'ml-IN'};
 
   /// Below this confidence a detection is not trusted (noisy audio, one-word answers).
-  static const minConfidence = 0.5; // English scores ~1.0; short loanword-heavy Hindi can be ~0.55
+  static const minConfidence = 0.5;
 
-  /// The language to reply in after an utterance: a confident detection of a supported language,
-  /// otherwise the conversation keeps the language it was in.
+  /// The language to reply in after an utterance: Kannada for a confident Kannada detection,
+  /// English for English or any other language (Hindi is not used), otherwise the conversation
+  /// keeps the language it was in.
   static String pick(String? detected, double? probability, {required String previous}) {
-    // Short Hindi commands share words with Gujarati/Marathi/Punjabi ("फ्लैशलाइट चालू करो" was scored
-    // gu-IN 0.75). An unsure detection of a close neighbour is treated as Hindi.
-    if (_hindiNeighbours.contains(detected) && (probability ?? 0) < 0.9) return hindi;
-    if (detected == null || !supported.contains(detected)) return previous;
-    if ((probability ?? 0) < minConfidence) return previous;
-    return detected;
+    final p = probability ?? 0;
+    if (detected == null) return previous;
+    if (detected == kannada) return p >= minConfidence ? kannada : previous;
+    // An unsure Telugu/Tamil/Malayalam score on a short command is most likely Kannada.
+    if (_kannadaNeighbours.contains(detected) && p < 0.9) return previous == kannada || p >= minConfidence ? kannada : previous;
+    if (detected == english) return p >= minConfidence ? english : previous;
+    return english; // Hindi or any other language: understood via English, answered in English
   }
 
-  /// Language of typed text, from its script (Kannada or Devanagari letters), else null.
+  /// Language of typed text: Kannada if it is mostly in Kannada script, else null (English).
   static String? ofScript(String text) {
-    var kn = 0, hi = 0, latin = 0;
+    var kn = 0, latin = 0;
     for (final r in text.runes) {
       if (r >= 0x0C80 && r <= 0x0CFF) {
         kn++;
-      } else if (r >= 0x0900 && r <= 0x097F) {
-        hi++;
       } else if ((r >= 0x41 && r <= 0x5A) || (r >= 0x61 && r <= 0x7A)) {
         latin++;
       }
     }
-    if (kn == 0 && hi == 0) return null;
-    if (kn + hi < latin ~/ 4) return null; // mostly English with a stray word
-    return kn >= hi ? kannada : hindi;
+    if (kn == 0) return null;
+    if (kn < latin ~/ 4) return null; // mostly English with a stray word
+    return kannada;
   }
 
   /// Speech translation turns relation words into English ("ಅಮ್ಮನಿಗೆ ಕರೆ ಮಾಡು" → "Call mother"),
@@ -145,7 +146,7 @@ class ReplyTranslator {
     }
   }
 
-  /// Translates what the user TYPED in Kannada/Hindi into English for LEO's command handling.
+  /// Translates what the user TYPED in Kannada into English for LEO's command handling.
   Future<String?> toEnglish(String text, String source) async {
     final k = apiKey();
     if (k == null || k.isEmpty) return null;

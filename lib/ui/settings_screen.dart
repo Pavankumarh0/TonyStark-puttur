@@ -232,7 +232,7 @@ class SettingsScreen extends StatelessWidget {
         SwitchListTile(
           value: s.mixedLanguage,
           onChanged: (v) => s.mixedLanguage = v,
-          title: const Text('Understand Hindi / Kannada / mixed speech'),
+          title: const Text('Understand Kannada / mixed speech'),
           subtitle: const Text(
             'Detects the language you speak and translates it into English before LEO acts. Turn off if names get mistranslated.',
             style: TextStyle(color: JColors.dim),
@@ -243,7 +243,7 @@ class SettingsScreen extends StatelessWidget {
           onChanged: s.mixedLanguage ? (v) => s.replyInMyLanguage = v : null,
           title: const Text('Reply in the language I speak'),
           subtitle: const Text(
-            'Speak Kannada or Hindi and LEO answers in Kannada or Hindi (everyday mixed style). Off = always English.',
+            'Speak Kannada and LEO answers in Kannada (everyday mixed style). Everything else is answered in English. Off = always English.',
             style: TextStyle(color: JColors.dim),
           ),
         ),

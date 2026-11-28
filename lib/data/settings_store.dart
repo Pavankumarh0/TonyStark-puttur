@@ -106,11 +106,11 @@ class SettingsStore extends ChangeNotifier {
   String get agentBrain => _prefs.getString('agent_brain') ?? 'gemini'; // 'gemini' = cloud (OpenAI) brain
   set agentBrain(String v) => _set('agent_brain', v);
 
-  /// Understand Hindi/Kannada/code-mixed speech by translating it to English (Sarvam translate mode).
+  /// Understand Kannada/code-mixed speech by translating it to English (Sarvam translate mode).
   bool get mixedLanguage => _prefs.getBool('mixed_language') ?? true;
   set mixedLanguage(bool v) => _setB('mixed_language', v);
 
-  /// Answer in the language the user spoke (Kannada, Hindi, mixed). Off = always English.
+  /// Answer in the language the user spoke (Kannada or English). Off = always English.
   bool get replyInMyLanguage => _prefs.getBool('reply_in_my_language') ?? true;
   set replyInMyLanguage(bool v) => _setB('reply_in_my_language', v);
 

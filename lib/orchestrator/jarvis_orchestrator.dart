@@ -112,7 +112,7 @@ class JarvisOrchestrator extends ChangeNotifier {
   /// or typed (from its script). Command handling always works on English.
   String replyLanguage = Lang.english;
   late final ReplyTranslator translator = ReplyTranslator(SarvamClient(), () => settings.secret(SecretKey.sarvam));
-  String? _typedOriginal; // what the user typed in Kannada/Hindi, shown in the chat instead of its translation
+  String? _typedOriginal; // what the user typed in Kannada, shown in the chat instead of its translation
   bool listeningEnabled = false;
   bool serviceRunning = false;
   bool get speaking => speechOut.speaking;
@@ -431,7 +431,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     final t = text.trim();
     if (t.isEmpty) return;
     if (speechOut.speaking) await speechOut.stop();
-    // Typed in Kannada or Hindi script → understood via English, answered in that language.
+    // Typed in Kannada script → understood via English, answered in that language.
     final script = settings.mixedLanguage ? Lang.ofScript(t) : null;
     replyLanguage = script ?? Lang.english;
     if (script != null) {
