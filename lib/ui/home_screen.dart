@@ -12,6 +12,7 @@ import '../voice/mic_engine.dart';
 import 'permissions_screen.dart';
 import 'theme.dart';
 import 'widgets/orb.dart';
+import 'widgets/run_timer.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -175,6 +176,8 @@ class _Header extends StatelessWidget {
               ],
             ),
           ),
+          RunTimerChip(clock: o.runClock),
+          const SizedBox(width: 4),
           Switch(
             value: o.listeningEnabled,
             onChanged: (v) => v ? o.enableListening() : o.disableListening(),

@@ -12,6 +12,8 @@ import '../ai/gemini_client.dart';
 import '../ai/local_agent_brain.dart';
 import '../core/approval/approval_gate.dart';
 import '../core/greeting.dart';
+import '../core/ambiguity.dart';
+import '../core/run_clock.dart';
 import '../core/intent/compose_detector.dart';
 import '../core/intent/local_classifier.dart';
 import '../core/intent/local_intent.dart';
@@ -123,6 +125,38 @@ class JarvisOrchestrator extends ChangeNotifier {
   Completer<String>? _freeTextWait;
   AgentState? _stateBeforePause;
   bool _loopRunning = false;
+
+  /// How long the current/last request took (shown top-right). Waiting for the user isn't counted.
+  final RunClock runClock = RunClock();
+  int _activeTasks = 0; // tasks started and not yet finished
+  bool _chainActive = false; // a multi-step plan still has steps to run
+  DateTime? _speechStartedAt, _speechEndedAt; // LEO's last spoken line
+
+  @override
+  void notifyListeners() {
+    _syncClock();
+    super.notifyListeners();
+  }
+
+  /// Pause the clock while LEO waits for the user (approval, a choice, a reply); resume after.
+  void _syncClock() {
+    if (!runClock.active) return;
+    final waiting = approvals.pending != null || choice != null || _freeTextWait != null;
+    waiting ? runClock.wait() : runClock.resume();
+  }
+
+  void _startClock() {
+    if (approvals.pending != null || choice != null || _freeTextWait != null) return; // an answer, not a new request
+    runClock.start();
+  }
+
+  /// Stops the clock once nothing is left to do. LEO's closing spoken line ("WhatsApp is open, sir")
+  /// isn't part of doing the task, so the count ends when that line began.
+  void _maybeFinishClock({bool ok = true}) {
+    if (!runClock.active || _activeTasks > 0 || _chainActive) return;
+    final endedJustNow = _speechEndedAt != null && DateTime.now().difference(_speechEndedAt!) < const Duration(milliseconds: 400);
+    runClock.finish(ok: ok, at: endedJustNow ? _speechStartedAt : null);
+  }
   bool _stopLoop = false;
   DateTime? _lastUserAt;
   StreamSubscription? _eventsSub;
@@ -362,6 +396,7 @@ class JarvisOrchestrator extends ChangeNotifier {
         idleWhileWaiting = 0;
         silentTurns = 0;
         await handleInput(heard, source: 'voice');
+        _maybeFinishClock();
         final stillWaiting = approvals.pending != null || choice != null || _freeTextWait != null;
         final stillBusy = task?.state == AgentState.running;
         if (stillWaiting || stillBusy) continue;
@@ -396,6 +431,7 @@ class JarvisOrchestrator extends ChangeNotifier {
       final text = await speechIn.listenOnce(
         noSpeechTimeout: timeout,
         onSpeechCaptured: () {
+          _startClock();
           _turnClock
             ..reset()
             ..start();
@@ -430,6 +466,15 @@ class JarvisOrchestrator extends ChangeNotifier {
   Future<void> submitText(String text) async {
     final t = text.trim();
     if (t.isEmpty) return;
+    _startClock();
+    try {
+      await _submitText(t);
+    } finally {
+      _maybeFinishClock();
+    }
+  }
+
+  Future<void> _submitText(String t) async {
     if (speechOut.speaking) await speechOut.stop();
     // Typed in Kannada script → understood via English, answered in that language.
     final script = settings.mixedLanguage ? Lang.ofScript(t) : null;
@@ -481,20 +526,25 @@ class JarvisOrchestrator extends ChangeNotifier {
         return;
       }
       final guess = classifier.classify(_currentUtterance);
-      if (guess != null) {
+      final best = guess == null ? null : classifier.predict(_currentUtterance).firstOrNull?.$1;
+      if (guess != null && best != null && Ambiguity.riskyGuess(best, _currentUtterance)) {
+        // "Rahul" / "dad" alone: don't place a call or send a message on a guess — confirm first.
+        final clarified = await _clarify(raw, best);
+        if (clarified != null) intent = clarified;
+      } else if (guess != null) {
         debugPrint('LEO local-model → ${guess.runtimeType}'); // never the user's words
         intent = guess;
       } else if (source != 'sarvam' && _sarvamReady && await _understandWithSarvam(raw, source)) {
         return; // Sarvam understood it and handed LEO clear commands
       } else {
         // Voice + screen: "delete this", "share it", "save that" in the assistant panel act on the app underneath.
-        final deictic = RegExp(r'\b(this|it|that|here|these|those)\b', caseSensitive: false).hasMatch(_currentUtterance);
+        final deictic = Ambiguity.refersToScreen(_currentUtterance);
         if (assistMode && deictic) {
           intent = PhoneTaskIntent('$_currentUtterance (on the screen that is open right now)');
         } else {
           // Somewhat sure → ask instead of guessing or failing.
           final top = classifier.predict(_currentUtterance);
-          if (top.isNotEmpty && top.first.$2 >= 0.4 && LocalIntentClassifier.describe(top.first.$1) != null) {
+          if (Ambiguity.isUnsure(top)) {
             final clarified = await _clarify(raw, top.first.$1);
             if (clarified != null) intent = clarified;
           }
@@ -1142,7 +1192,10 @@ class JarvisOrchestrator extends ChangeNotifier {
   void _startTask(String title, String kind, TaskRoute route, Map<String, dynamic> params) {
     final now = DateTime.now();
     params = {'utterance': _currentUtterance, ...params};
+    _activeTasks++;
     unawaited(() async {
+     TaskTracker? started;
+     try {
       var snap = TaskSnapshot(
         id: 0,
         title: title,
@@ -1166,7 +1219,12 @@ class JarvisOrchestrator extends ChangeNotifier {
       notifyListeners();
       tr.setState(AgentState.planning);
       tr.setState(AgentState.running);
+      started = tr;
       await _execute(tr, _runners[kind]!);
+     } finally {
+      _activeTasks--;
+      _maybeFinishClock(ok: started?.snapshot.state == AgentState.completed);
+     }
     }());
   }
 
@@ -1768,7 +1826,7 @@ class JarvisOrchestrator extends ChangeNotifier {
     var when = TimeParser.when(tr.snapshot.params['text'] as String);
     tr.addStep(const TaskStep(id: 'time', description: 'Understand the time'));
     tr.addStep(const TaskStep(id: 'set', description: 'Set it in the Clock app'));
-    if (when == null || !when.hadTime) {
+    if (when == null || Ambiguity.needsTime(tr.snapshot.params['text'] as String)) {
       final said = await _askFreeText(tr, 'For what time, $a?');
       when = TimeParser.when(said);
       if (when == null) throw Exception('I couldn\'t understand that time.');
@@ -2912,9 +2970,7 @@ class JarvisOrchestrator extends ChangeNotifier {
       if (!st.isGranted) st = await Permission.contacts.request();
       if (!st.isGranted) throw Exception('I need Contacts permission to find $name.');
       final all = await tr.control.guard(_findContacts(tr, name));
-      final exact = all.where((c) => c.name.toLowerCase() == name.toLowerCase()).toList();
-      final firstName = all.where((c) => c.name.toLowerCase().split(' ').first == name.toLowerCase()).toList();
-      final pool = exact.isNotEmpty ? exact : (firstName.isNotEmpty ? firstName : all);
+      final pool = Ambiguity.callCandidates(name, all);
       if (pool.isEmpty) {
         tr.updateStep('contact', status: StepStatus.failed, detail: 'No match');
         throw Exception('I couldn\'t find $name in your contacts.');
@@ -3081,10 +3137,7 @@ class JarvisOrchestrator extends ChangeNotifier {
         if (!st.isGranted) st = await Permission.contacts.request();
         if (st.isGranted) contacts = await tr.control.guard(device.searchContacts(recipientQuery));
         if (st.isGranted && contacts.isEmpty) contacts = await tr.control.guard(_relationContacts(recipientQuery));
-        final exact = contacts.where((c) => c.name.toLowerCase() == recipientQuery.toLowerCase()).toList();
-        var pool = exact.isNotEmpty ? exact : contacts;
-        final wa = pool.where((c) => c.hasWhatsApp).toList();
-        if (wa.isNotEmpty) pool = wa;
+        final pool = Ambiguity.messageCandidates(recipientQuery, contacts);
         if (pool.isEmpty) {
           searchName = recipientQuery;
           recipientId = 'search:${recipientQuery.toLowerCase()}';
@@ -3495,10 +3548,25 @@ class JarvisOrchestrator extends ChangeNotifier {
   int _chainId = 0;
   Future<void> _runCommandChain(List<String> rest) async {
     final id = ++_chainId;
-    for (final c in rest) {
-      if (!await _waitTaskIdle() || id != _chainId) return;
-      if (task?.state == AgentState.failed || task?.state == AgentState.cancelled) return; // don't plough on after a failure
-      await handleInput(c, source: 'sarvam');
+    _chainActive = true;
+    var ok = true;
+    try {
+      for (final c in rest) {
+        if (!await _waitTaskIdle() || id != _chainId) {
+          ok = false;
+          return;
+        }
+        if (task?.state == AgentState.failed || task?.state == AgentState.cancelled) {
+          ok = false;
+          return; // don't plough on after a failure
+        }
+        await handleInput(c, source: 'sarvam');
+      }
+    } finally {
+      if (id == _chainId) {
+        _chainActive = false;
+        _maybeFinishClock(ok: ok);
+      }
     }
   }
 
@@ -3561,7 +3629,9 @@ class JarvisOrchestrator extends ChangeNotifier {
           debugPrint('LEO timing: first reply ${_turnClock.elapsedMilliseconds}ms after speech ended');
           _turnClock.stop();
         }
+        _speechStartedAt = DateTime.now();
         await speechOut.speak(shown, private: isPrivate, languageCode: identical(shown, text) ? Lang.english : lang);
+        _speechEndedAt = DateTime.now();
         if (speechOut.lastError != null && speechOut.lastEngine == 'device') {
           banner ??= speechOut.lastError;
         }

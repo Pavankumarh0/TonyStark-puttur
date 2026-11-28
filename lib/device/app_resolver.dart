@@ -73,8 +73,10 @@ class AppResolver {
   static String _n(String s) => s.toLowerCase().replaceAll(RegExp(r'[^a-z0-9 ]'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
 
   /// Returns matches, best first. Empty = not installed / not understood.
-  Future<List<InstalledApp>> resolve(String spoken) async {
-    final installed = await apps();
+  Future<List<InstalledApp>> resolve(String spoken) async => match(spoken, await apps());
+
+  /// The matching itself (pure, so it can be tested and evaluated without a phone).
+  static List<InstalledApp> match(String spoken, List<InstalledApp> installed) {
     final q = _n(spoken).replaceAll(RegExp(r'\b(app|application)\b'), '').trim();
     if (q.isEmpty) return [];
     final byPkg = {for (final a in installed) a.packageName: a};

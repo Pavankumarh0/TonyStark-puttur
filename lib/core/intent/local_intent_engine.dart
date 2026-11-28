@@ -437,12 +437,19 @@ class LocalIntentEngine {
     final rem = RegExp(r"^(?:remind me|set a reminder|reminder)(?: to| about| that)?\s+(.+?)\s+(?:at|in|on|tomorrow|tonight|today|by)\b", caseSensitive: false)
         .firstMatch(text);
     if (rem != null && TimeParser.when(text) != null) return SetAlarmIntent(text, label: _cap(rem.group(1)!));
+    // "remind me to call the bank" with no time: the reminder runner asks "for what time?".
+    final remNoTime = RegExp(r"^(?:remind me|set a reminder|reminder)\s+(?:to|about|that)\s+(.+)$", caseSensitive: false).firstMatch(text);
+    if (remNoTime != null && TimeParser.when(text) == null) return SetAlarmIntent(text, label: _cap(remNoTime.group(1)!));
     // Alarm
     if (RegExp(r"^(set|create|put|make|add)( an| a| my| the)? alarm\b|^wake me( up)?\b|^alarm (for|at)\b").hasMatch(n)) {
       if (TimeParser.when(text) != null) {
         final label = RegExp(r"\b(?:called|named|labelled|labeled|saying|for) ([a-z ]+)$").firstMatch(n);
         final l = label?.group(1);
         return SetAlarmIntent(text, label: l != null && !RegExp(r"\d|am|pm|tomorrow|today|morning|evening").hasMatch(l) ? _cap(l) : null);
+      }
+      // "set an alarm" / "wake me up" with no time: the alarm runner asks "for what time?".
+      if (RegExp(r"^(set|create|put|make|add)( an| a| my| the)?( new)? alarm( please)?$|^wake me( up)?( please)?$").hasMatch(n)) {
+        return SetAlarmIntent(text);
       }
     }
     // Start a meeting now
@@ -624,7 +631,11 @@ class LocalIntentEngine {
       if (r != null) return SendMessageIntent(app: app, recipient: r.name, isGroup: r.isGroup);
     }
     final bareMessage = RegExp(r"^(?:message|text|ping|whatsapp)\s+(.+)$", caseSensitive: false).firstMatch(t);
-    if (bareMessage != null && mentionsWa) {
+    // "message Deepak" (just a name, up to 3 words): LEO asks what to say.
+    final justName = bareMessage != null &&
+        bareMessage.group(1)!.trim().split(RegExp(r'\s+')).length <= 3 &&
+        !RegExp(r"^(me|from|for|my|the|on|in|is|are|everyone|all)\b", caseSensitive: false).hasMatch(bareMessage.group(1)!.trim());
+    if (bareMessage != null && (mentionsWa || justName)) {
       final r = _recipient(bareMessage.group(1)!);
       if (r != null) return SendMessageIntent(app: app, recipient: r.name, isGroup: r.isGroup);
     }

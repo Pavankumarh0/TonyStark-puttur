@@ -8,6 +8,7 @@ import '../voice/mic_engine.dart';
 import 'home_screen.dart';
 import 'theme.dart';
 import 'widgets/orb.dart';
+import 'widgets/run_timer.dart';
 
 /// Gemini-style assistant sheet shown over any app when LEO is invoked as the phone's digital
 /// assistant (long-press side key / corner swipe). Shows the live conversation so follow-ups
@@ -99,6 +100,7 @@ class _AssistPanelState extends State<AssistPanel> with SingleTickerProviderStat
                             Text(d.label, style: TextStyle(color: d.color, letterSpacing: 2, fontWeight: FontWeight.w700, fontSize: 11)),
                           ]),
                         ),
+                        RunTimerChip(clock: o.runClock),
                         IconButton(tooltip: 'Open LEO', onPressed: device.openFullApp, icon: const Icon(Icons.open_in_full, color: JColors.dim)),
                         IconButton(tooltip: 'Close', onPressed: device.closeAssist, icon: const Icon(Icons.close, color: JColors.dim)),
                       ]),
