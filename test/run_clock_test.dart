@@ -52,6 +52,27 @@ void main() {
     expect(c.elapsed.inMilliseconds, 300);
   });
 
+  test('while LEO speaks the count freezes, and never jumps backwards', () {
+    final c = clock()..start();
+    after(400);
+    c.hold(); // "It's 9 AM, sir."
+    after(1500);
+    expect(c.elapsed.inMilliseconds, 400); // frozen on screen
+    c.finish();
+    expect(c.elapsed.inMilliseconds, 400); // same number as shown
+  });
+
+  test('if work goes on after a spoken line, that time counts', () {
+    final c = clock()..start();
+    after(300);
+    c.hold(); // "Certainly, opening WhatsApp…"
+    after(1000);
+    c.release(); // still working
+    after(200);
+    c.finish();
+    expect(c.elapsed.inMilliseconds, 1500);
+  });
+
   test('format is short', () {
     expect(RunClock.format(const Duration(milliseconds: 870)), '0.9s');
     expect(RunClock.format(const Duration(milliseconds: 12400)), '12.4s');

@@ -155,7 +155,7 @@ class JarvisOrchestrator extends ChangeNotifier {
   void _maybeFinishClock({bool ok = true}) {
     if (!runClock.active || _activeTasks > 0 || _chainActive) return;
     final endedJustNow = _speechEndedAt != null && DateTime.now().difference(_speechEndedAt!) < const Duration(milliseconds: 400);
-    runClock.finish(ok: ok, at: endedJustNow ? _speechStartedAt : null);
+    runClock.finish(ok: ok, at: endedJustNow && !runClock.held ? _speechStartedAt : null);
   }
   bool _stopLoop = false;
   DateTime? _lastUserAt;
@@ -3604,10 +3604,10 @@ class JarvisOrchestrator extends ChangeNotifier {
   Future<void> _sayChain = Future.value();
 
   /// Speaks without waiting for the speech to finish; later lines queue behind it.
-  void _sayAhead(String text, {String? kind}) => unawaited(_say(text, kind: kind));
+  void _sayAhead(String text, {String? kind}) => unawaited(_say(text, kind: kind, ahead: true));
 
   Future<void> _say(String text,
-      {bool store = true, String route = 'local', String? kind, String extraStoredText = '', bool private = false}) async {
+      {bool store = true, String route = 'local', String? kind, String extraStoredText = '', bool private = false, bool ahead = false}) async {
     final isPrivate = private || isPrivateSpeech(text, kind);
     final lang = replyLanguage;
     final stops = speechOut.stopCount;
@@ -3630,8 +3630,12 @@ class JarvisOrchestrator extends ChangeNotifier {
           _turnClock.stop();
         }
         _speechStartedAt = DateTime.now();
+        // The timer freezes while LEO speaks a reply ("ahead" lines overlap real work, so they count).
+        if (!ahead) runClock.hold();
         await speechOut.speak(shown, private: isPrivate, languageCode: identical(shown, text) ? Lang.english : lang);
         _speechEndedAt = DateTime.now();
+        // Work continuing after this line? Then the speech counted after all — resume the live count.
+        if (!ahead) unawaited(Future<void>.delayed(const Duration(milliseconds: 400), runClock.release));
         if (speechOut.lastError != null && speechOut.lastEngine == 'device') {
           banner ??= speechOut.lastError;
         }

@@ -12,14 +12,33 @@ class RunClock extends ChangeNotifier {
   RunPhase _phase = RunPhase.idle;
   Duration _acc = Duration.zero;
   DateTime? _segment; // start of the current running stretch
+  DateTime? _holdAt; // LEO started speaking: the display freezes here
+
+  bool get held => _holdAt != null;
 
   RunPhase get phase => _phase;
   bool get active => _phase == RunPhase.running || _phase == RunPhase.waiting;
-  Duration get elapsed => _acc + (_segment == null ? Duration.zero : _now().difference(_segment!));
+  Duration get elapsed => _acc + (_segment == null ? Duration.zero : (_holdAt ?? _now()).difference(_segment!));
+
+  /// LEO is speaking a reply: freeze the count (speaking isn't doing the task). If the work goes on
+  /// afterwards, [release] counts the speech too; if it ends, [finish] stops at the frozen value —
+  /// so the number never jumps backwards.
+  void hold() {
+    if (_phase != RunPhase.running || _holdAt != null) return;
+    _holdAt = _now();
+    notifyListeners();
+  }
+
+  void release() {
+    if (_holdAt == null) return;
+    _holdAt = null;
+    notifyListeners();
+  }
 
   /// A new request. Ignored while one is in progress (e.g. the user answering LEO's question).
   void start() {
     if (active) return;
+    _holdAt = null;
     _acc = Duration.zero;
     _segment = _now();
     _set(RunPhase.running);
@@ -28,8 +47,9 @@ class RunClock extends ChangeNotifier {
   /// LEO is waiting for the user: stop counting.
   void wait() {
     if (_phase != RunPhase.running) return;
-    _acc += _now().difference(_segment!);
+    _acc += (_holdAt ?? _now()).difference(_segment!);
     _segment = null;
+    _holdAt = null;
     _set(RunPhase.waiting);
   }
 
@@ -45,11 +65,12 @@ class RunClock extends ChangeNotifier {
   void finish({bool ok = true, DateTime? at}) {
     if (!active) return;
     if (_segment != null) {
-      var end = at ?? _now();
+      var end = at ?? _holdAt ?? _now();
       if (end.isBefore(_segment!)) end = _segment!;
       _acc += end.difference(_segment!);
       _segment = null;
     }
+    _holdAt = null;
     _set(ok ? RunPhase.done : RunPhase.failed);
   }
 
